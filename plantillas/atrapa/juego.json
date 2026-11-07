@@ -1,0 +1,455 @@
+{
+  "name": "Atrapa la fruta",
+  "width": 800.0,
+  "height": 600.0,
+  "first_scene": "Juego",
+  "globals": {
+    "puntos_final": 0.0
+  },
+  "objects": [],
+  "scenes": [
+    {
+      "name": "Juego",
+      "background": [
+        150,
+        210,
+        250
+      ],
+      "layers": [
+        {
+          "name": "",
+          "visible": true,
+          "fixed": false
+        },
+        {
+          "name": "HUD",
+          "visible": true,
+          "fixed": true
+        }
+      ],
+      "objects": [
+        {
+          "name": "Canasta",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/canasta.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "bound_to_layout"
+            }
+          ]
+        },
+        {
+          "name": "Manzana",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/manzana.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "bullet",
+              "speed": 180.0
+            }
+          ]
+        },
+        {
+          "name": "Banana",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/banana.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "bullet",
+              "speed": 240.0
+            }
+          ]
+        },
+        {
+          "name": "Suelo",
+          "type": "box",
+          "w": 800.0,
+          "h": 30.0,
+          "color": [
+            90,
+            160,
+            70
+          ]
+        },
+        {
+          "name": "Marcador",
+          "type": "text",
+          "text": "Puntos: {puntos}     Vidas: {vidas}",
+          "size": 26.0,
+          "color": [
+            30,
+            40,
+            60
+          ]
+        }
+      ],
+      "groups": {
+        "Fruta": [
+          "Manzana",
+          "Banana"
+        ]
+      },
+      "instances": [
+        {
+          "obj": "Canasta",
+          "x": 360.0,
+          "y": 520.0
+        },
+        {
+          "obj": "Suelo",
+          "x": 0.0,
+          "y": 570.0
+        },
+        {
+          "obj": "Marcador",
+          "x": 16.0,
+          "y": 12.0,
+          "layer": "HUD"
+        }
+      ],
+      "vars": {
+        "puntos": 0.0,
+        "vidas": 3.0
+      },
+      "events": [
+        {
+          "kind": "comment",
+          "text": "Atrapa la fruta: mueve la canasta con las flechas o con el mouse. Si se te caen 3, pierdes."
+        },
+        {
+          "conds": [
+            {
+              "op": "key_down",
+              "args": [
+                "Left"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "add",
+              "args": [
+                "Canasta",
+                "x",
+                "-420 * dt"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "key_down",
+              "args": [
+                "Right"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "add",
+              "args": [
+                "Canasta",
+                "x",
+                "420 * dt"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "mouse_down",
+              "args": [
+                "Left"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "set",
+              "args": [
+                "Canasta",
+                "cx",
+                "mousex"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "every",
+              "args": [
+                "max(0.5, 1.4 - puntos * 0.04)"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "create",
+              "args": [
+                "Manzana",
+                "random(20, 760)",
+                "-30",
+                ""
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Manzana",
+                "angle",
+                "90"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "every",
+              "args": [
+                "3.1"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "create",
+              "args": [
+                "Banana",
+                "random(20, 760)",
+                "-30",
+                ""
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Banana",
+                "angle",
+                "90"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "collides",
+              "args": [
+                "Canasta",
+                "Fruta"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "delete",
+              "args": [
+                "Fruta"
+              ]
+            },
+            {
+              "op": "add_var",
+              "args": [
+                "puntos",
+                "1"
+              ]
+            },
+            {
+              "op": "play_sound",
+              "args": [
+                "snd/atrapar.wav",
+                "70"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "collides",
+              "args": [
+                "Fruta",
+                "Suelo"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "delete",
+              "args": [
+                "Fruta"
+              ]
+            },
+            {
+              "op": "add_var",
+              "args": [
+                "vidas",
+                "-1"
+              ]
+            },
+            {
+              "op": "play_sound",
+              "args": [
+                "snd/caer.wav",
+                "70"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "compare",
+              "args": [
+                "vidas",
+                "<=",
+                "0"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "set_global",
+              "args": [
+                "puntos_final",
+                "puntos"
+              ]
+            },
+            {
+              "op": "change_scene",
+              "args": [
+                "Fin"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Fin",
+      "background": [
+        60,
+        90,
+        130
+      ],
+      "layers": [
+        {
+          "name": "",
+          "visible": true,
+          "fixed": false
+        }
+      ],
+      "objects": [
+        {
+          "name": "Titulo",
+          "type": "text",
+          "text": "¡Se te cayó la fruta!",
+          "size": 56.0,
+          "color": [
+            255,
+            220,
+            90
+          ]
+        },
+        {
+          "name": "Info",
+          "type": "text",
+          "text": "Puntos: {puntos_final}   ·   Enter para jugar otra vez",
+          "size": 24.0,
+          "color": [
+            255,
+            255,
+            255
+          ]
+        }
+      ],
+      "groups": {},
+      "instances": [
+        {
+          "obj": "Titulo",
+          "x": 60.0,
+          "y": 150.0
+        },
+        {
+          "obj": "Info",
+          "x": 60.0,
+          "y": 260.0
+        }
+      ],
+      "vars": {},
+      "events": [
+        {
+          "kind": "comment",
+          "text": "Pantalla final: muestra los puntos y espera Enter o un clic."
+        },
+        {
+          "conds": [
+            {
+              "op": "or",
+              "sub": [
+                {
+                  "op": "key_pressed",
+                  "args": [
+                    "Enter"
+                  ]
+                },
+                {
+                  "op": "mouse_clicked",
+                  "args": [
+                    "Left"
+                  ]
+                }
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "change_scene",
+              "args": [
+                "Juego"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "functions": []
+}

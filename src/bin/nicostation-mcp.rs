@@ -90,7 +90,9 @@ fn tools() -> Vec<J> {
         t("proyecto_crear", "Crea un proyecto nuevo (carpeta + juego .json) con una escena vacía y lo deja abierto.",
             json!({"ruta": s("Ruta del archivo .json a crear, p. ej. /home/u/juegos/mi-juego/juego.json"), "nombre": s("Nombre del juego"),
                    "ancho": n("Ancho en px (800)"), "alto": n("Alto en px (600)"), "escena": s("Nombre de la primera escena (Principal)"),
-                   "sobrescribir": json!({"type": "boolean", "description": "Reemplazar si ya existe"})}), &["ruta", "nombre"]),
+                   "sobrescribir": json!({"type": "boolean", "description": "Reemplazar si ya existe"}),
+                   "plantilla": s("Opcional: empezar desde un juego completo (ver herramienta plantillas). La ruta debe estar en una carpeta nueva.")}), &["ruta", "nombre"]),
+        t("plantillas", "Juegos completos listos para modificar (plataformas, vista de arriba, naves, atrapar fruta).", json!({}), &[]),
         t("proyecto_abrir", "Abre un proyecto existente y devuelve su resumen.", json!({"ruta": s("Ruta del .json")}), &["ruta"]),
         t("proyecto_resumen", "Resumen del proyecto abierto: escenas, objetos, comportamientos, instancias, eventos y problemas.", json!({}), &[]),
         t("proyecto_json", "JSON completo del proyecto, o solo de una escena.", json!({"escena": s("Opcional: solo esta escena")}), &[]),
@@ -214,6 +216,19 @@ impl Srv {
     fn call(&mut self, name: &str, a: &J) -> Result<String, String> {
         match name {
             "catalogo" => Ok(catalogo()),
+            "plantillas" => Ok(nicostation::plantillas::lista().iter().map(|t| format!("- {}: «{}»", t.carpeta, t.nombre)).collect::<Vec<_>>().join("\n")),
+            "proyecto_crear" if a.get("plantilla").is_some_and(|v| v.is_string()) => {
+                let path = PathBuf::from(arg::<String>(a, "ruta")?);
+                let json = nicostation::plantillas::crear(&arg::<String>(a, "plantilla")?, &base_dir(&path))?;
+                if json != path {
+                    std::fs::rename(&json, &path).map_err(|e| e.to_string())?;
+                }
+                let mut p = load(&path)?;
+                p.name = arg(a, "nombre")?;
+                save(&path, &p)?;
+                self.cur = Some(path.clone());
+                Ok(format!("Proyecto creado desde la plantilla.\n{}", resumen(&p, &path)))
+            }
             "proyecto_crear" => {
                 let path = PathBuf::from(arg::<String>(a, "ruta")?);
                 if path.exists() && a["sobrescribir"].as_bool() != Some(true) {
@@ -232,6 +247,7 @@ impl Srv {
                     objects: vec![],
                     scenes: vec![serde_json::from_value(json!({"name": scene})).map_err(|e| e.to_string())?],
                     functions: vec![],
+                    plantilla: String::new(),
                 };
                 save(&path, &p)?;
                 self.cur = Some(path.clone());

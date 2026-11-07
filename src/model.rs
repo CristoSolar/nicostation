@@ -53,6 +53,9 @@ pub struct Project {
     pub scenes: Vec<Scene>,
     #[serde(default)]
     pub functions: Vec<Function>,
+    /// Plantilla de la que salió el proyecto (carpeta), para ofrecer sus misiones.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub plantilla: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

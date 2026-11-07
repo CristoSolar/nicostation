@@ -2,7 +2,9 @@
 pub mod catalog;
 pub mod export;
 pub mod expr;
+pub mod misiones;
 pub mod model;
+pub mod plantillas;
 pub mod recetas;
 pub mod runtime;
 pub mod validate;

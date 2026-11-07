@@ -167,7 +167,7 @@ fn new_scene(name: &str) -> Scene {
 fn new_project() -> Project {
     Project {
         name: "Mi juego".into(), width: 800., height: 600., first_scene: "Escena".into(), globals: Vars::new(),
-        objects: vec![], scenes: vec![new_scene("Escena")], functions: vec![],
+        objects: vec![], scenes: vec![new_scene("Escena")], functions: vec![], plantilla: String::new(),
     }
 }
 
