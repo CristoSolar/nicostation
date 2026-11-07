@@ -114,6 +114,8 @@ fn pregunta(op: &str, k: usize, name: &str, t: P) -> String {
         (P::Var, _) => "¿Qué cajita?",
         (P::Func, _) => "¿Cuál de tus bloques?",
         (P::Text, _) => "¿Cómo se llama el cronómetro?",
+        (P::Ease, _) => "¿Cómo se mueve?",
+        (P::Code, _) => "Código Rhai (para programadores)",
         (_, "Segundos") => "¿Cuántos segundos?",
         (_, "X") => "Posición X (izquierda a derecha)",
         (_, "Y") => "Posición Y (arriba a abajo)",
@@ -403,6 +405,12 @@ fn ficha(op: &str, k: usize, t: P, v: &str, l: &Lists) -> (String, Ficha, Option
         P::Key => (catalog::key_label(v), Ficha::Normal, None),
         P::Mouse => (catalog::mouse_label(v).into(), Ficha::Normal, None),
         P::Op => (catalog::op_words(v).into(), Ficha::Normal, Some(format!("Comparación «{v}»"))),
+        P::Ease => (catalog::ease_label(v).into(), Ficha::Normal, Some(format!("Curva «{v}»"))),
+        P::Code => {
+            let l1 = v.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+            let l1 = if l1.chars().count() > 24 { format!("{}...", l1.chars().take(22).collect::<String>()) } else { l1.to_string() };
+            (format!("código: {l1}"), Ficha::Normal, Some(v.to_string()))
+        }
         P::Prop if catalog::PROPS.contains(&v) => (prop_corta(v), Ficha::Normal, Some(mayus(&catalog::prop_label(v)))),
         P::Prop => (v.into(), Ficha::Cajita, Some(format!("Cajita «{v}» del objeto"))),
         P::Layer if v.is_empty() => ("base".into(), Ficha::Normal, Some("La capa normal".into())),
@@ -661,6 +669,39 @@ pub fn teclado(ui: &mut Ui, v: &mut String) -> bool {
 }
 
 /// Botón grande de opción (seleccionado = acento).
+/// Curvas de un cambio suave: cada opción muestra su forma.
+fn curvas(ui: &mut Ui, v: &mut String) -> bool {
+    let mut ch = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::splat(6.);
+        for e in catalog::EASES {
+            let sel = v == e;
+            let (rect, r) = ui.allocate_exact_size(Vec2::new(132., 104.), Sense::click());
+            let p = ui.painter();
+            let hov = r.hovered();
+            p.rect_filled(rect, 8, if sel { blend(ACCENT, SURFACE, 0.22) } else if hov { SURFACE_HOVER } else { SURFACE });
+            p.rect_stroke(rect, 8, Stroke::new(if sel { 2. } else { 1. }, if sel { ACCENT } else if hov { BORDER_STRONG } else { BORDER }), egui::StrokeKind::Inside);
+            // La curva: de abajo a la izquierda (empieza) a arriba a la derecha (llega). Puede pasarse un poco.
+            let g = Rect::from_min_size(rect.min + Vec2::new(16., 16.), Vec2::new(rect.width() - 32., 40.));
+            p.line_segment([g.left_bottom(), g.right_bottom()], Stroke::new(1., BORDER_STRONG));
+            p.line_segment([g.left_top(), g.right_top()], Stroke::new(1., BORDER));
+            let pts: Vec<Pos2> = (0..=40).map(|k| {
+                let t = k as f32 / 40.;
+                Pos2::new(g.left() + t * g.width(), g.bottom() - nicostation::runtime::ease(e, t) * g.height())
+            }).collect();
+            p.add(egui::Shape::line(pts, Stroke::new(2.5, if sel { ACCENT } else { CAT_MOV })));
+            let name = catalog::ease_label(e);
+            let gl = p.layout(name.to_string(), sb(13.), TEXT, rect.width() - 10.);
+            p.galley(Pos2::new(rect.center().x - gl.size().x / 2., rect.bottom() - 6. - gl.size().y), gl, TEXT);
+            if r.on_hover_text(format!("{name} ({e})")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                *v = e.to_string();
+                ch = true;
+            }
+        }
+    });
+    ch
+}
+
 fn opcion(ui: &mut Ui, sel: bool, atoms: impl egui::IntoAtoms<'static>, w: f32) -> bool {
     let b = Button::selectable(sel, atoms).min_size(Vec2::new(w, 38.));
     ui.add(b).clicked()
@@ -926,6 +967,7 @@ pub fn editor(ui: &mut Ui, t: P, v: &mut String, cx: &ArgCx, new_var: &mut Optio
         P::Key => teclado(ui, v),
         P::Mouse => mouse(ui, v),
         P::Op => ops(ui, v),
+        P::Ease => curvas(ui, v),
         P::Scene => nombres(ui, v, &cx.l.scenes, ic::FILM, CAT_SCENE, ""),
         P::Layer => nombres(ui, v, &cx.l.layers, ic::STACK, TEXT_MUTED, "base"),
         P::Anim => animaciones(ui, v, cx),
@@ -944,12 +986,17 @@ pub fn editor(ui: &mut Ui, t: P, v: &mut String, cx: &ArgCx, new_var: &mut Optio
             ui.add(TextEdit::singleline(v).desired_width(220.).font(FontId::proportional(16.)));
             false
         }
+        P::Code => {
+            ui.label(RichText::new("Código para programadores (Rhai). Si no lo conoces, mejor usa los bloques.").color(TEXT_MUTED));
+            eventos::codigo(ui, v, 460.);
+            false
+        }
     }
 }
 
 /// Opciones discretas: al elegir se cierra la ventanita.
 fn cierra(t: P) -> bool {
-    matches!(t, P::Object | P::Key | P::Mouse | P::Op | P::Scene | P::Layer | P::Anim | P::File | P::Func)
+    matches!(t, P::Object | P::Key | P::Mouse | P::Op | P::Ease | P::Scene | P::Layer | P::Anim | P::File | P::Func)
 }
 
 // ---------- bloques ----------
@@ -1139,10 +1186,15 @@ enum EAct {
     Up,
     Down,
     Nota,
+    SiNo,
 }
 
-const KINDS: [(EventKind, &str); 5] = [
+/// Color del «si no» (su conector y su encabezado).
+const SI_NO: Color32 = CAT_MOV;
+
+const KINDS: [(EventKind, &str); 6] = [
     (EventKind::Standard, "Normal (CUANDO / ENTONCES)"),
+    (EventKind::Else, "Si no (cuando lo de arriba no pasó)"),
     (EventKind::Repeat, "Repetir varias veces"),
     (EventKind::ForEach, "Para cada objeto"),
     (EventKind::While, "Mientras se cumpla"),
@@ -1157,20 +1209,29 @@ pub fn hoja(ui: &mut Ui, evs: &mut Vec<Event>, path: &[usize], h: &Hoja, out: &m
         FICHA_AHORA.store(true, Relaxed);
     }
     let mut act = None;
-    let mut rects = vec![];
+    let mut rects: Vec<Rect> = vec![];
+    // Un «si no» queda un poco más separado del de arriba, para que se vea el conector que los une.
+    let si_no: Vec<bool> = evs.iter().map(|e| e.kind == EventKind::Else).collect();
     for (i, e) in evs.iter_mut().enumerate() {
         let p: Vec<usize> = path.iter().copied().chain([i]).collect();
         ui.push_id(i, |ui| {
             let (a, r) = evento(ui, e, &p, h, out);
+            if si_no[i] && i > 0 {
+                conector_si_no(ui, r);
+            }
             rects.push(r);
             if let Some(a) = a {
                 act = Some((i, a));
             }
         });
-        ui.add_space(4.);
+        ui.add_space(if si_no.get(i + 1) == Some(&true) { 12. } else { 4. });
     }
     match act {
         Some((i, EAct::Below)) => evs.insert(i + 1, Event::default()),
+        Some((i, EAct::SiNo)) => {
+            evs.insert(i + 1, Event { kind: EventKind::Else, ..Default::default() });
+            out.msg = Some("Nuevo «si no»: pasa solo cuando el evento de arriba no se cumplió".into());
+        }
         Some((i, EAct::Nota)) => evs.insert(i, Event { kind: EventKind::Comment, ..Default::default() }),
         Some((i, EAct::Dup)) => {
             let e = evs[i].clone();
@@ -1187,9 +1248,22 @@ pub fn hoja(ui: &mut Ui, evs: &mut Vec<Event>, path: &[usize], h: &Hoja, out: &m
     rects
 }
 
+/// Une un «si no» con el evento de arriba: una pequeña barra con dos puntas en el hueco entre las tarjetas.
+fn conector_si_no(ui: &Ui, card: Rect) {
+    let x = card.left() + 30.;
+    let (y0, y1) = (card.top() - 14., card.top() + 2.);
+    let p = ui.painter();
+    p.line_segment([Pos2::new(x, y0), Pos2::new(x, y1)], Stroke::new(3., SI_NO));
+    p.circle_filled(Pos2::new(x, y0), 3.5, SI_NO);
+    p.circle_filled(Pos2::new(x, y1), 3.5, SI_NO);
+}
+
 fn menu_evento(ui: &mut Ui, e: &mut Event, act: &mut Option<EAct>) {
     if menu_item(ui, ic::PLUS, "Nuevo evento debajo") {
         *act = Some(EAct::Below);
+    }
+    if matches!(e.kind, EventKind::Standard | EventKind::Else) && menu_item(ui, ic::BEND_DOWN_RIGHT, "Agregar «si no» debajo") {
+        *act = Some(EAct::SiNo);
     }
     if e.kind != EventKind::Comment && menu_item(ui, ic::ELBOW, "Agregar «y además, si...»") {
         e.sub.push(Event::default());
@@ -1353,13 +1427,21 @@ fn grupo(ui: &mut Ui, e: &mut Event, p: &[usize], h: &Hoja, out: &mut Salida, ac
 fn tarjeta(ui: &mut Ui, e: &mut Event, p: &[usize], h: &Hoja, probs: &[&Problema], out: &mut Salida, act: &mut Option<EAct>, jump: bool) -> egui::Response {
     let ev_probs: Vec<&&Problema> = probs.iter().filter(|x| x.at.is_none()).collect();
     let bad = !probs.is_empty();
-    let stroke = if bad { Stroke::new(1.5, DANGER) } else if jump { Stroke::new(1.5, ACCENT) } else { Stroke::new(1., BORDER) };
+    let stroke = if bad {
+        Stroke::new(1.5, DANGER)
+    } else if jump {
+        Stroke::new(1.5, ACCENT)
+    } else if e.kind == EventKind::Else {
+        Stroke::new(1.5, blend(SI_NO, SURFACE, 0.6))
+    } else {
+        Stroke::new(1., BORDER)
+    };
     let r = Frame::new().fill(SURFACE).stroke(stroke).corner_radius(10).inner_margin(12).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let wide = ui.available_width() >= 600.;
         // Encabezado de tipos especiales.
         let lbl = |ui: &mut Ui, t: &str| drop(ui.label(caps(t, 14., TEXT)));
-        if e.kind != EventKind::Standard || e.disabled {
+        if !matches!(e.kind, EventKind::Standard | EventKind::Else) || e.disabled {
             ui.horizontal_wrapped(|ui| {
                 match e.kind {
                     EventKind::Repeat => {
@@ -1420,7 +1502,8 @@ fn tarjeta(ui: &mut Ui, e: &mut Event, p: &[usize], h: &Hoja, probs: &[&Problema
                         x(ui, e);
                     }
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.add(egui::Label::new(caps(t, 14., TEXT)).truncate()).on_hover_text(tip);
+                        let c = if t.starts_with("SI NO") { SI_NO } else { TEXT };
+                        ui.add(egui::Label::new(caps(t, 14., c)).truncate()).on_hover_text(tip);
                         if let Some(p) = pista {
                             ui.add(egui::Label::new(RichText::new(p).color(TEXT_MUTED)).truncate());
                         }
@@ -1429,9 +1512,25 @@ fn tarjeta(ui: &mut Ui, e: &mut Event, p: &[usize], h: &Hoja, probs: &[&Problema
             });
         };
         let cuando = |ui: &mut Ui, e: &mut Event, out: &mut Salida, extra: Option<&mut dyn FnMut(&mut Ui, &mut Event)>| {
-            let t = if e.conds.is_empty() { "SIEMPRE" } else if e.kind == EventKind::While { "MIENTRAS" } else { "CUANDO" };
-            let pista = e.conds.is_empty().then(|| format!("{} todo el tiempo", ic::INFINITY));
-            encabezado(ui, e, t, "CUANDO: lo que tiene que pasar. Si pasa todo esto, se hacen los bloques de ENTONCES.", pista, extra);
+            let si_no = e.kind == EventKind::Else;
+            let t = match (si_no, e.conds.is_empty()) {
+                (true, true) => "SI NO",
+                (true, false) => "SI NO, CUANDO",
+                (false, true) => "SIEMPRE",
+                _ if e.kind == EventKind::While => "MIENTRAS",
+                _ => "CUANDO",
+            };
+            let pista = match (si_no, e.conds.is_empty()) {
+                (true, true) => Some("si lo de arriba no pasó".to_string()),
+                (false, true) => Some(format!("{} todo el tiempo", ic::INFINITY)),
+                _ => None,
+            };
+            let tip = if si_no {
+                "SI NO: estos bloques se hacen solo si el evento de arriba no se cumplió (y lo de CUANDO, si hay algo, sí se cumple)."
+            } else {
+                "CUANDO: lo que tiene que pasar. Si pasa todo esto, se hacen los bloques de ENTONCES."
+            };
+            encabezado(ui, e, t, tip, pista, extra);
             bloques(ui, &mut e.conds, p, true, &[], h, probs, out);
             if add_btn(ui, "Cuando", ACCENT).on_hover_text("Agregar algo que tiene que pasar").clicked() {
                 out.open = Some(Open { ev: p.to_vec(), cond: true, ip: vec![], new: true });

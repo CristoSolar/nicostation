@@ -70,7 +70,7 @@ pub fn eval(e: &Expr, c: &dyn Ctx) -> Value {
         Expr::Bin(op, a, b) => {
             let (a, b) = (eval(a, c), eval(b, c));
             if *op == b'+' && (matches!(a, Value::Str(_)) || matches!(b, Value::Str(_))) {
-                return Value::Str(a.text() + &b.text());
+                return Value::Str(format!("{}{}", a.text(), b.text()));
             }
             let (a, b) = (a.num(), b.num());
             Value::Num(match op {

@@ -8,4 +8,5 @@ pub mod pack;
 pub mod plantillas;
 pub mod recetas;
 pub mod runtime;
+pub mod script;
 pub mod validate;

@@ -447,18 +447,24 @@ async fn game() {
             for i in order {
                 let o = &world.insts[i];
                 let Some(def) = world.object_def(&o.obj) else { continue };
+                if !o.visible {
+                    continue;
+                }
                 let alpha = (o.opacity.clamp(0., 255.)) as u8;
+                let [tr, tg, tb] = o.tint;
+                // El color de la instancia multiplica al del dibujo.
+                let mul = |c: [u8; 3]| Color::from_rgba((c[0] as u16 * tr as u16 / 255) as u8, (c[1] as u16 * tg as u16 / 255) as u8, (c[2] as u16 * tb as u16 / 255) as u8, alpha);
                 let c = to_screen(o.cx(), o.cy());
                 match &def.kind {
                     Kind::Box { color, .. } => draw_rectangle_ex(c.x, c.y, o.w * k, o.h * k, DrawRectangleParams {
                         offset: vec2(0.5, 0.5),
                         rotation: o.angle.to_radians(),
-                        color: Color::from_rgba(color[0], color[1], color[2], alpha),
+                        color: mul(*color),
                     }),
                     Kind::Sprite { animations, .. } => {
                         let frame = animations.get(o.anim).and_then(|a| a.frames.get(o.frame)).and_then(|f| tex.get(f));
                         match frame {
-                            Some(t) => draw_texture_ex(t, c.x - o.w * k / 2., c.y - o.h * k / 2., Color::from_rgba(255, 255, 255, alpha), DrawTextureParams {
+                            Some(t) => draw_texture_ex(t, c.x - o.w * k / 2., c.y - o.h * k / 2., mul([255, 255, 255]), DrawTextureParams {
                                 dest_size: Some(vec2(o.w * k, o.h * k)),
                                 rotation: o.angle.to_radians(),
                                 flip_x: o.flip_x,
@@ -482,7 +488,7 @@ async fn game() {
                                     continue;
                                 }
                                 let at = to_screen(o.x + c as f32 * tile, o.y + r as f32 * tile);
-                                draw_texture_ex(t, at.x, at.y, Color::from_rgba(255, 255, 255, alpha), DrawTextureParams {
+                                draw_texture_ex(t, at.x, at.y, mul([255, 255, 255]), DrawTextureParams {
                                     // +0.5 px para que no se vean rayas entre baldosas al escalar
                                     dest_size: Some(vec2(tile * k + 0.5, tile * k + 0.5)),
                                     source: Some(Rect::new((n % per_row) as f32 * tile, (n / per_row) as f32 * tile, *tile, *tile)),
@@ -494,7 +500,7 @@ async fn game() {
                     Kind::Text { size, color, .. } => {
                         let txt = world.display_text(i);
                         let tl = to_screen(o.x, o.y);
-                        draw_text(&txt, tl.x, tl.y + size * k * 0.8, size * k, Color::from_rgba(color[0], color[1], color[2], alpha));
+                        draw_text(&txt, tl.x, tl.y + size * k * 0.8, size * k, mul(*color));
                     }
                 }
             }

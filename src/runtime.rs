@@ -68,10 +68,48 @@ pub struct Inst {
     ignore_jt: Option<u64>,
     /// Baldosas de un mapa (copia de las del objeto; las acciones pueden cambiarlas).
     pub tiles: Vec<i32>,
+    /// Se dibuja (las invisibles igual chocan y corren sus eventos).
+    pub visible: bool,
+    /// Color que multiplica al dibujo (blanco = sin cambio).
+    pub tint: [u8; 3],
+    /// Tamaño original, para scale_x / scale_y.
+    pub base_w: f32,
+    pub base_h: f32,
     /// Alarmas en marcha: (nombre, segundos que faltan).
     pub alarms: Vec<(String, f32)>,
     /// Alarmas que sonaron en este frame.
     pub fired: Vec<String>,
+    tweens: Vec<Tween>,
+}
+
+/// Cambio suave de una propiedad numérica.
+#[derive(Clone, Default)]
+struct Tween {
+    prop: String,
+    from: f32,
+    to: f32,
+    t: f32,
+    dur: f32,
+    ease: String,
+}
+
+/// Curvas de suavizado (las clásicas de Robert Penner, como en GDevelop y GameMaker). t va de 0 a 1.
+pub fn ease(name: &str, t: f32) -> f32 {
+    use std::f32::consts::PI;
+    let bounce = |t: f32| {
+        let (n, d) = (7.5625, 2.75);
+        if t < 1. / d { n * t * t } else if t < 2. / d { let t = t - 1.5 / d; n * t * t + 0.75 }
+        else if t < 2.5 / d { let t = t - 2.25 / d; n * t * t + 0.9375 } else { let t = t - 2.625 / d; n * t * t + 0.984375 }
+    };
+    match name {
+        "ease_in" => t * t,
+        "ease_out" => 1. - (1. - t) * (1. - t),
+        "ease_in_out" => if t < 0.5 { 2. * t * t } else { 1. - (-2. * t + 2.).powi(2) / 2. },
+        "back" => { let c = 1.70158; 1. + (c + 1.) * (t - 1.).powi(3) + c * (t - 1.).powi(2) }
+        "elastic" => if t <= 0. || t >= 1. { t } else { 2f32.powf(-10. * t) * ((t * 10. - 0.75) * (2. * PI / 3.)).sin() + 1. },
+        "bounce" => bounce(t),
+        _ => t,
+    }
 }
 
 const FALLING: u8 = 0;
@@ -119,6 +157,15 @@ pub struct World {
     pub vars: Vars,
     pub camera: (f32, f32),
     pub zoom: f32,
+    /// Cámara que sigue a una instancia: (id, suavidad 0 = rígida .. 0.99 = muy suave).
+    cam_follow: Option<(u64, f32)>,
+    /// Límites de la cámara (x0, y0, x1, y1): no muestra nada fuera de este rectángulo.
+    cam_bounds: Option<(f32, f32, f32, f32)>,
+    /// Temblor: (intensidad en px, segundos que quedan) y el desplazamiento aplicado este frame.
+    cam_shake: (f32, f32),
+    cam_shake_off: (f32, f32),
+    /// Zoom animado: (desde, hasta, t, duración).
+    zoom_tween: Option<(f32, f32, f32, f32)>,
     pub time: f64,
     pub dt: f32,
     pub input: Input,
@@ -154,6 +201,11 @@ impl World {
             vars: Vars::new(),
             camera: (0., 0.),
             zoom: 1.,
+            cam_follow: None,
+            cam_bounds: None,
+            cam_shake: (0., 0.),
+            cam_shake_off: (0., 0.),
+            zoom_tween: None,
             time: 0.,
             dt: 0.,
             input: Input::default(),
@@ -179,12 +231,16 @@ impl World {
         w
     }
 
-    fn warn(&self, m: String) {
+    pub(crate) fn warn(&self, m: String) {
         let mut log = self.log.borrow_mut();
         if !log.contains(&m) {
             eprintln!("{m}");
             log.push(m);
         }
+    }
+
+    pub(crate) fn request_scene(&mut self, name: &str) {
+        self.pending = Some(name.into());
     }
 
     pub fn scene_def(&self) -> &Scene {
@@ -209,6 +265,7 @@ impl World {
         self.once_last.clear();
         self.camera = (p.width / 2., p.height / 2.);
         self.zoom = 1.;
+        (self.cam_follow, self.cam_bounds, self.cam_shake, self.cam_shake_off, self.zoom_tween) = (None, None, (0., 0.), (0., 0.), None);
         self.time = 0.;
         self.first_frame = true;
         self.dragging = None;
@@ -251,6 +308,10 @@ impl World {
             text,
             vars: t.vars.clone(),
             tiles,
+            visible: true,
+            tint: [255, 255, 255],
+            base_w: w,
+            base_h: h,
             ..Default::default()
         });
         self.insts.len() - 1
@@ -362,16 +423,72 @@ impl World {
         self.input = input;
         self.animate();
         self.tick_alarms();
+        self.tick_tweens();
         self.run_tasks();
         self.behaviors_pre();
         self.once_last = std::mem::take(&mut self.once_now);
         let p = self.project.clone();
         self.run_events(&p.scenes[self.scene].events, &Sol::new());
         self.behaviors_post();
+        self.update_camera();
         self.insts.retain(|i| !i.dead);
         self.first_frame = false;
         if let Some(s) = self.pending.take() {
             self.load_scene(&s);
+        }
+    }
+
+    fn tick_tweens(&mut self) {
+        let dt = self.dt;
+        for i in 0..self.insts.len() {
+            if self.insts[i].tweens.is_empty() {
+                continue;
+            }
+            let mut tw = std::mem::take(&mut self.insts[i].tweens);
+            for t in &mut tw {
+                t.t = (t.t + dt).min(t.dur);
+                let k = if t.dur > 0. { ease(&t.ease, t.t / t.dur) } else { 1. };
+                self.put(i, &t.prop, Value::Num((t.from + (t.to - t.from) * k) as f64));
+            }
+            tw.retain(|t| t.t < t.dur);
+            self.insts[i].tweens = tw;
+        }
+    }
+
+    /// Seguir, límites, temblor y zoom animado. Se aplica después de los eventos, como en GameMaker.
+    fn update_camera(&mut self) {
+        let dt = self.dt;
+        // Quitar el temblor del frame anterior antes de mover la cámara.
+        self.camera.0 -= self.cam_shake_off.0;
+        self.camera.1 -= self.cam_shake_off.1;
+        if let Some((from, to, t, dur)) = self.zoom_tween {
+            let t = (t + dt).min(dur);
+            self.zoom = from + (to - from) * ease("ease_in_out", if dur > 0. { t / dur } else { 1. });
+            self.zoom_tween = (t < dur).then_some((from, to, t, dur));
+        }
+        if let Some((id, smooth)) = self.cam_follow {
+            match self.insts.iter().find(|i| i.id == id && !i.dead) {
+                Some(me) => {
+                    // Suavidad independiente de los FPS: a 60 FPS se acerca (1 - smooth) del camino por frame.
+                    let k = 1. - smooth.clamp(0., 0.99).powf(dt * 60.);
+                    self.camera.0 += (me.cx() - self.camera.0) * k;
+                    self.camera.1 += (me.cy() - self.camera.1) * k;
+                }
+                None => self.cam_follow = None,
+            }
+        }
+        if let Some((x0, y0, x1, y1)) = self.cam_bounds {
+            let (hw, hh) = (self.project.width / self.zoom / 2., self.project.height / self.zoom / 2.);
+            let clamp = |v: f32, lo: f32, hi: f32| if hi - lo < 0. { (lo + hi) / 2. } else { v.clamp(lo, hi) };
+            self.camera = (clamp(self.camera.0, x0 + hw, x1 - hw), clamp(self.camera.1, y0 + hh, y1 - hh));
+        }
+        self.cam_shake_off = (0., 0.);
+        if self.cam_shake.1 > 0. {
+            self.cam_shake.1 -= dt;
+            let a = self.cam_shake.0;
+            self.cam_shake_off = (((self.random() * 2. - 1.) as f32) * a, ((self.random() * 2. - 1.) as f32) * a);
+            self.camera.0 += self.cam_shake_off.0;
+            self.camera.1 += self.cam_shake_off.1;
         }
     }
 
@@ -555,6 +672,10 @@ impl World {
                 let (l, r) = (self.ev(a(0), sol, None), self.ev(a(2), sol, None));
                 free(compare(&l, a(1), &r))
             }
+            "script_if" => {
+                let r = crate::script::run(self, sol, a(0)).is_some_and(|v| v.truthy());
+                free(r)
+            }
             "call_cond" => {
                 self.call(c, sol);
                 let r = self.ret.take().unwrap_or(false);
@@ -654,6 +775,7 @@ impl World {
             "falling" => self.filter(a(0), c.not, sol, |w, i| w.insts[i].pstate == FALLING && w.has_platformer(i)),
             "on_ladder" => self.filter(a(0), c.not, sol, |w, i| w.insts[i].pstate == ON_LADDER),
             "grabbing" => self.filter(a(0), c.not, sol, |w, i| w.insts[i].pstate == GRABBING),
+            "tweening" => self.filter(a(0), c.not, sol, |w, i| !w.insts[i].tweens.is_empty()),
             "is_moving" => self.filter(a(0), c.not, sol, |w, i| w.insts[i].vx != 0. || w.insts[i].vy != 0.),
             op => {
                 self.warn(format!("condición desconocida: {op}"));
@@ -773,7 +895,10 @@ impl World {
             }
             "change_scene" => self.pending = Some(a(0).into()),
             "restart_scene" => self.pending = Some(self.scene_def().name.clone()),
-            "camera" => self.camera = (num(self, a(0), sol, None), num(self, a(1), sol, None)),
+            "camera" => {
+                self.cam_follow = None;
+                self.camera = (num(self, a(0), sol, None), num(self, a(1), sol, None));
+            }
             "camera_zoom" => self.zoom = num(self, a(0), sol, None).max(0.01),
             "play_sound" | "play_music" => {
                 let volume = if a(1).is_empty() { 100. } else { num(self, a(1), sol, None) };
@@ -781,6 +906,29 @@ impl World {
                 self.cmds.push(if c.op == "play_sound" { Cmd::PlaySound { file, volume } } else { Cmd::PlayMusic { file, volume } });
             }
             "stop_music" => self.cmds.push(Cmd::StopMusic),
+            "tween" => {
+                for i in self.pick(a(0), sol) {
+                    let to = num(self, a(2), sol, Some(i));
+                    let dur = num(self, a(3), sol, Some(i)).max(0.);
+                    let from = self.get(i, a(1)).num() as f32;
+                    let me = &mut self.insts[i];
+                    me.tweens.retain(|t| t.prop != a(1));
+                    me.tweens.push(Tween { prop: a(1).into(), from, to, t: 0., dur, ease: a(4).into() });
+                }
+            }
+            "camera_follow" => {
+                let smooth = if a(1).is_empty() { 0.85 } else { num(self, a(1), sol, None) };
+                self.cam_follow = self.pick(a(0), sol).first().map(|&i| (self.insts[i].id, smooth));
+            }
+            "camera_bounds" => {
+                let v: Vec<f32> = (0..4).map(|k| num(self, a(k), sol, None)).collect();
+                self.cam_bounds = Some((v[0], v[1], v[2], v[3]));
+            }
+            "camera_shake" => self.cam_shake = (num(self, a(0), sol, None), num(self, a(1), sol, None)),
+            "camera_zoom_to" => {
+                let (to, secs) = (num(self, a(0), sol, None).max(0.01), num(self, a(1), sol, None));
+                self.zoom_tween = Some((self.zoom, to, 0., secs.max(0.)));
+            }
             "set_alarm" => {
                 for i in self.pick(a(0), sol) {
                     let secs = num(self, a(2), sol, Some(i));
@@ -792,6 +940,9 @@ impl World {
                 }
             }
             "wait" => {} // lo maneja body()
+            "script" => {
+                crate::script::run(self, sol, a(0));
+            }
             "stop_sound" => self.cmds.push(Cmd::StopSound { file: a(0).into() }),
             "save_value" | "erase_saved" => {
                 if c.op == "save_value" {
@@ -853,13 +1004,17 @@ impl World {
             "opacity" => n(me.opacity),
             "z" => n(me.z),
             "speed" => n(me.vx.hypot(me.vy)),
+            "visible" => Value::Num(me.visible as i32 as f64),
+            "scale_x" => n(if me.base_w != 0. { me.w / me.base_w } else { 1. }),
+            "scale_y" => n(if me.base_h != 0. { me.h / me.base_h } else { 1. }),
+            "tint" => Value::Str(format!("#{:02x}{:02x}{:02x}", me.tint[0], me.tint[1], me.tint[2])),
             "anim" => Value::Str(self.anim_name(i)),
             "text" => Value::Str(me.text.clone()),
             _ => me.vars.get(p).cloned().unwrap_or(Value::Num(0.)),
         }
     }
 
-    fn put(&mut self, i: usize, p: &str, v: Value) {
+    pub(crate) fn put(&mut self, i: usize, p: &str, v: Value) {
         let me = &mut self.insts[i];
         let f = v.num() as f32;
         match p {
@@ -873,6 +1028,19 @@ impl World {
             "opacity" => me.opacity = f.clamp(0., 255.),
             "z" => me.z = f,
             "text" => me.text = v.text(),
+            "visible" => me.visible = v.truthy(),
+            // Escala alrededor del centro, como image_xscale de GameMaker.
+            "scale_x" => {
+                let c = me.cx();
+                me.w = me.base_w * f;
+                me.x = c - me.w / 2.;
+            }
+            "scale_y" => {
+                let c = me.cy();
+                me.h = me.base_h * f;
+                me.y = c - me.h / 2.;
+            }
+            "tint" => me.tint = parse_color(&v.text()).unwrap_or([255, 255, 255]),
             _ => {
                 me.vars.insert(p.into(), v);
             }
@@ -911,7 +1079,7 @@ impl World {
         out + rest
     }
 
-    fn random(&self) -> f64 {
+    pub(crate) fn random(&self) -> f64 {
         // xorshift64*
         let mut x = self.rng.get();
         x ^= x >> 12;
@@ -1395,6 +1563,30 @@ fn accelerate(v: f32, dir: f32, acc: f32, dec: f32, dt: f32) -> f32 {
     }
 }
 
+/// "#rrggbb", "rrggbb" o nombres comunes en español/inglés.
+pub fn parse_color(s: &str) -> Option<[u8; 3]> {
+    let named = match s.trim().to_lowercase().as_str() {
+        "blanco" | "white" => Some([255, 255, 255]),
+        "negro" | "black" => Some([0, 0, 0]),
+        "rojo" | "red" => Some([255, 60, 60]),
+        "verde" | "green" => Some([70, 200, 90]),
+        "azul" | "blue" => Some([70, 120, 255]),
+        "amarillo" | "yellow" => Some([255, 220, 60]),
+        "naranja" | "orange" => Some([255, 150, 50]),
+        "gris" | "gray" | "grey" => Some([140, 140, 140]),
+        _ => None,
+    };
+    if named.is_some() {
+        return named;
+    }
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    let b = |k: usize| u8::from_str_radix(&h[k..k + 2], 16).ok();
+    Some([b(0)?, b(2)?, b(4)?])
+}
+
 fn button(name: &str) -> usize {
     match name {
         "Right" => 1,
@@ -1423,7 +1615,7 @@ fn compare(a: &Value, op: &str, b: &Value) -> bool {
 
 fn add(old: &Value, v: &Value) -> Value {
     match (old, v) {
-        (Value::Str(a), _) => Value::Str(a.clone() + &v.text()),
+        (Value::Str(a), _) => Value::Str(format!("{a}{}", v.text())),
         _ => Value::Num(old.num() + v.num()),
     }
 }
@@ -1780,6 +1972,57 @@ mod tests {
         let pairs = w.hits(&(0..400).collect::<Vec<_>>(), &(0..400).collect::<Vec<_>>(), 0.);
         assert_eq!(pairs.len(), 399 * 2); // cada vecino en ambos sentidos
         assert!(t.elapsed().as_millis() < 200, "lento: {:?}", t.elapsed());
+    }
+
+    #[test]
+    fn tween_y_camara() {
+        let mut w = with(r#"[
+            {"conds":[{"op":"start"}],"acts":[{"op":"tween","args":["B","x","105","1","ease_out"]},
+                {"op":"camera_follow","args":["B","0"]},{"op":"camera_bounds","args":["0","0","400","300"]}]}
+        ]"#);
+        let run = |w: &mut World, secs: f32| for _ in 0..(secs * 60.).round() as usize { w.step(1. / 60., Input::default()) };
+        run(&mut w, 0.5);
+        let x = w.insts[2].x;
+        assert!(x > 55. + 5. && x < 105., "a mitad de camino con ease_out va adelantado: {x}");
+        run(&mut w, 0.6);
+        assert_eq!(w.insts[2].x, 105.);
+        assert!(w.insts[2].tweens.is_empty());
+        // La cámara sigue a B (centro 110, 10) pero no sale de los límites: medio ancho 100, medio alto 100.
+        assert_eq!(w.camera, (110., 100.));
+        assert_eq!((ease("bounce", 1.), ease("elastic", 0.), ease("back", 1.)), (1., 0., 1.));
+    }
+
+    #[test]
+    fn scripts_rhai() {
+        let mut w = with(r#"[
+            {"acts":[{"op":"script","args":["let n = 0; for id in all(\"A\") { set_prop(id, \"x\", prop(id, \"x\") + 1.0); n += 1; } set_var(\"n\", n); save(\"visto\", true);"]}]},
+            {"conds":[{"op":"script_if","args":["count(\"A\") == 2 && get_var(\"n\") == 2"]}],"acts":[{"op":"set_var","args":["ok","1"]}]},
+            {"conds":[{"op":"start"}],"acts":[{"op":"script","args":["let id = create(\"B\", 10.0, 20.0); set_prop(id, \"angle\", point_angle(0.0, 0.0, 0.0, 1.0));"]}]},
+            {"conds":[{"op":"start"}],"acts":[{"op":"script","args":["loop { }"]},{"op":"script","args":["esto no compila ("]}]}
+        ]"#);
+        w.step(0.016, Input::default());
+        assert_eq!(w.vars["n"], Value::Num(2.));
+        assert_eq!(w.vars["ok"], Value::Num(1.));
+        assert_eq!((w.insts[0].x, w.insts[1].x), (1., 51.));
+        assert_eq!(w.storage["visto"], Value::Bool(true));
+        let nuevo = w.insts.iter().find(|i| i.obj == "B" && i.x == 10.).unwrap();
+        assert_eq!(nuevo.angle, 90.);
+        let log = w.log.borrow().join(" | ");
+        assert!(log.contains("operations") || log.contains("operaciones"), "el ciclo infinito se corta: {log}");
+        assert!(log.contains("sintaxis"), "{log}");
+        assert!(crate::script::check("let a = 1 +").is_err() && crate::script::check("let a = 1;").is_ok());
+    }
+
+    #[test]
+    fn propiedades_visuales() {
+        let mut w = with(r##"[{"conds":[{"op":"start"}],"acts":[
+            {"op":"set","args":["B","scale_x","2"]},{"op":"set","args":["B","tint","\"#ff0000\""]},{"op":"set","args":["B","visible","0"]}]}]"##);
+        w.step(0.016, Input::default());
+        let b = &w.insts[2];
+        assert_eq!((b.w, b.x, b.tint, b.visible), (20., 0., [255, 0, 0], false)); // creció desde el centro (x 5 → 0)
+        assert_eq!(w.get(2, "scale_x"), Value::Num(2.));
+        assert_eq!(parse_color("verde"), Some([70, 200, 90]));
+        assert_eq!(parse_color("#12ab"), None);
     }
 
     #[test]

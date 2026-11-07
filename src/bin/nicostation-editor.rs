@@ -18,7 +18,14 @@
 //! `bienvenida` (pantalla «¿Qué juego quieres hacer hoy?»), `nuevo-plantilla` (bienvenida con la ventanita de nombre y
 //! carpeta de la primera plantilla abierta; Enter crea el juego), `misiones` (abre el panel de misiones),
 //! `mision-activa` (empieza la primera misión del juego y marca «¡Listo!» en su primer paso si es de los que se marcan a mano),
-//! `mision-cumplida` (lo mismo y aprieta «¡Listo!» en todos los pasos manuales: si los automáticos ya se cumplen, muestra el festejo).
+//! `mision-cumplida` (lo mismo y aprieta «¡Listo!» en todos los pasos manuales: si los automáticos ya se cumplen, muestra el festejo),
+//! `vista` («Jugar aquí» con el héroe caminando a la derecha 2,5 s), `vista-pausa` (lo mismo, en pausa y con el héroe elegido),
+//! `depurador` (corriendo con el héroe elegido), `registro` / `rendimiento` (esas pestañas del depurador; rendimiento con «ver toda
+//! la escena»), `vista-abajo` (la vista previa abajo, con la pestaña Eventos), `recarga` (cambia el fondo y agrega una moneda mientras
+//! juega: se ve «Cambios aplicados»), `jugar` (sin ensayo, con el teclado en el juego: probar con `--tecla Space`),
+//! `si-no` (agrega un «si no, cuando» y un «si no» debajo del primer evento).
+//!
+//! Vista previa: F6 empieza / pausa, F7 avanza un cuadro. Con el juego enfocado (clic en él) el teclado va al juego.
 //!
 //! `--captura salida.png` dibuja el editor sin ventana (1360×820, wgpu fuera de pantalla) y guarda la imagen;
 //! con `--tecla Enter` (u otra tecla de egui) la aprieta a mitad de la captura.
@@ -53,6 +60,10 @@ mod inicio;
 mod misiones;
 #[path = "../editor/captura.rs"]
 mod captura;
+#[path = "../editor/vista.rs"]
+mod vista;
+#[path = "../editor/depurador.rs"]
+mod depurador;
 
 use eframe::egui::{
     self, Align, Align2, AtomExt, Button, Color32, DragValue, Frame, Key, Layout, Margin, Modifiers, PointerButton, Pos2, Rect,
@@ -170,6 +181,14 @@ struct App {
     mis_sesion: HashMap<PathBuf, misiones::Misiones>,
     /// Hora de egui del último cuadro.
     t: f64,
+    // ---- vista previa ----
+    /// Juego corriendo dentro del editor («Jugar aquí»).
+    vista: Option<vista::Sesion>,
+    vprefs: vista::Prefs,
+    /// Partida guardada de la vista previa (sobrevive a detener y volver a jugar).
+    vista_partida: Vars,
+    /// `--abrir vista…` pendiente (se aplica en el primer cuadro).
+    vista_abrir: Option<String>,
 }
 
 /// Pregunta que sigue a «+ Sprite» y «+ Mapa».
@@ -681,6 +700,7 @@ impl App {
             probs: vec![], probs_de: String::new(), jump: None, nota: None, files: vec![], files_at: None, bar_lr: (0., 0.),
             pintor: mapa::Pintor::default(), dib: None, nuevo: None,
             inicio: None, mis: Default::default(), mis_json: String::new(), mis_sesion: HashMap::new(), t: 0.,
+            vista: None, vprefs: vista::Prefs::default(), vista_partida: Vars::new(), vista_abrir: None,
         }
     }
 
@@ -691,6 +711,7 @@ impl App {
     fn set_project(&mut self, p: Project, path: Option<PathBuf>) {
         let kids = std::mem::take(&mut self.kids);
         let (facil, grande, t) = (self.facil, self.grande, self.t);
+        let vprefs = std::mem::take(&mut self.vprefs);
         // El avance de las misiones de este juego queda guardado por si se vuelve a abrir en la sesión.
         let mut mis_sesion = std::mem::take(&mut self.mis_sesion);
         if let Some(old) = self.path.as_ref() {
@@ -700,7 +721,7 @@ impl App {
         if let Some(n) = path.as_ref() {
             inicio::recordar(n);
         }
-        *self = App { p, path, kids, facil, grande, t, mis, mis_sesion, ..App::new() };
+        *self = App { p, path, kids, facil, grande, t, mis, mis_sesion, vprefs, ..App::new() };
         self.now = self.json();
         self.saved = self.now.clone();
         self.hist = Historial::new(self.now.clone());
@@ -1076,7 +1097,7 @@ impl App {
     fn top_bar(&mut self, ui: &mut Ui) {
         let full = ui.max_rect();
         // Si no entra todo: 1 = sin nombre del programa y botones más cortos, 2 = además pestañas sin íconos.
-        let nivel = if full.width() >= 1240. { 0 } else if full.width() >= 900. { 1 } else { 2 };
+        let nivel = if full.width() >= 1400. { 0 } else if full.width() >= 900. { 1 } else { 2 };
         let compact = nivel > 0;
         let mut lr = self.bar_lr;
         ui.horizontal_centered(|ui| {
@@ -1093,8 +1114,21 @@ impl App {
             }
             let right = ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let hint = RichText::new("F5").small().color(ON_ACCENT.gamma_multiply(0.75));
-                if primary(ui, (on_accent(ic::PLAY), on_accent("Probar").font(sb(14.)), hint)).on_hover_text("Guardar y ejecutar el juego").clicked() {
+                if primary(ui, (on_accent(ic::PLAY), on_accent("Probar").font(sb(14.)), hint)).on_hover_text("Guardar y ejecutar el juego en su propia ventana, con sonido").clicked() {
                     self.run();
+                }
+                // Con el juego corriendo, sus controles están en la barra de la vista previa.
+                if self.vista.is_none() {
+                    let tip = "Jugar dentro del editor, con depurador (F6). Si cambias algo, se actualiza solo.";
+                    let r = if nivel == 2 {
+                        ib(ui, ic::MONITOR_PLAY, tip)
+                    } else {
+                        ui.add(Button::new((RichText::new(ic::MONITOR_PLAY).color(ACCENT), RichText::new("Jugar aquí").font(sb(14.))))).on_hover_text(tip)
+                    };
+                    if r.clicked() {
+                        let ctx = ui.ctx().clone();
+                        self.vista_empezar(&ctx);
+                    }
                 }
                 if nivel == 2 {
                     // Exportar queda en el menú Archivo.
@@ -1212,6 +1246,8 @@ impl App {
                 }
                 if r.clicked() {
                     self.tab = t;
+                    // Con el juego en todo el centro, ir a una pestaña lo deja abajo para poder editar mientras corre.
+                    self.vprefs.grande &= self.vista.is_none();
                 }
             }
         });
@@ -2884,6 +2920,19 @@ impl App {
         }
     }
 
+    /// `--abrir si-no`: debajo del primer evento con condiciones, un «si no, cuando» y un «si no».
+    fn abrir_si_no(&mut self) {
+        self.tab = Tab::Eventos;
+        let evs = &mut self.p.scenes[self.sc].events;
+        let i = evs.iter().position(|e| e.kind == EventKind::Standard && !e.conds.is_empty()).unwrap_or_else(|| {
+            evs.push(Event { conds: vec![Instr::new("key_down", &["Right"])], ..Default::default() });
+            evs.len() - 1
+        });
+        let acts = evs[i].acts.clone();
+        evs.insert(i + 1, Event { kind: EventKind::Else, conds: vec![Instr::new("key_down", &["Up"])], ..Default::default() });
+        evs.insert(i + 2, Event { kind: EventKind::Else, acts, ..Default::default() });
+    }
+
     /// Vista inicial pedida con `--abrir` (para probar la interfaz).
     fn abrir(&mut self, que: &str) {
         match que {
@@ -2954,6 +3003,11 @@ impl App {
                 self.tab = Tab::Escena;
                 self.nuevo_mapa();
             }
+            "vista" | "vista-pausa" | "vista-abajo" | "depurador" | "registro" | "rendimiento" | "recarga" | "jugar" => {
+                self.tab = Tab::Escena;
+                self.vista_abrir = Some(que.into());
+            }
+            "si-no" => self.abrir_si_no(),
             _ => {}
         }
     }
@@ -2997,6 +3051,328 @@ impl App {
         if title != self.title {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
+        }
+    }
+}
+
+/// Etiqueta flotante sobre la vista previa (fondo oscuro, ícono y texto).
+fn chip(p: &egui::Painter, at: Pos2, align: Align2, icon: &str, t: &str, c: Color32) -> Rect {
+    let g = p.layout_no_wrap(format!("{icon}  {t}"), egui::FontId::proportional(14.), c);
+    let r = align.anchor_size(at, g.size() + Vec2::new(18., 10.));
+    p.rect_filled(r, 8, Color32::from_black_alpha(200));
+    p.rect_stroke(r, 8, Stroke::new(1., c.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+    p.galley(r.min + Vec2::new(9., 5.), g, c);
+    r
+}
+
+/// Vista previa dentro del editor: armado del juego, barra de controles, dibujo y depurador.
+impl App {
+    /// Mundo del juego con el proyecto actual (imágenes cargadas y tamaño de los sprites resuelto).
+    fn vista_mundo(&mut self, ctx: &egui::Context) -> (nicostation::runtime::World, HashMap<String, egui::TextureHandle>, String) {
+        let json = self.json();
+        let mut p = self.p.clone();
+        let mut tex = HashMap::new();
+        for f in vista::imagenes(&p) {
+            if let Some(t) = self.texture(ctx, &f) {
+                tex.insert(f, t);
+            }
+        }
+        vista::preparar(&mut p, |f| tex.get(f).map(|t| t.size()));
+        (nicostation::runtime::World::new(p), tex, json)
+    }
+
+    fn vista_escena_inicial(&self) -> String {
+        if self.vprefs.desde_aqui { self.p.scenes[self.sc].name.clone() } else { self.p.first_scene.clone() }
+    }
+
+    fn vista_empezar(&mut self, ctx: &egui::Context) {
+        let (mut w, tex, json) = self.vista_mundo(ctx);
+        w.storage = self.vista_partida.clone();
+        let esc = self.vista_escena_inicial();
+        if w.scene_def().name != esc {
+            w.load_scene(&esc);
+        }
+        let mut s = vista::Sesion::nueva(w, tex, json);
+        let n = s.world.scene_def().name.clone();
+        s.anotar(vista::Tipo::Escena, format!("Empezó el juego en la escena «{n}»"));
+        self.vista = Some(s);
+        self.mis.probado(self.t);
+        self.say(Nivel::Ok, if self.facil { "¡A jugar! Haz clic en el juego para usar el teclado." } else { "Vista previa en marcha (F6 pausa, F7 avanza un cuadro)" });
+    }
+
+    /// Recarga en caliente: mismo juego con los cambios, en la misma escena, conservando globales y partida.
+    fn vista_recargar(&mut self, ctx: &egui::Context) {
+        if self.vista.is_none() {
+            return;
+        }
+        let (w, tex, json) = self.vista_mundo(ctx);
+        let t = self.t;
+        if let Some(s) = self.vista.as_mut() {
+            s.cambiar_mundo(w, tex, json);
+            s.aviso = Some(("Cambios aplicados".into(), t + 2.));
+        }
+    }
+
+    fn vista_detener(&mut self) {
+        if let Some(s) = self.vista.take() {
+            self.vista_partida = s.world.storage.clone();
+            self.say(Nivel::Info, if self.facil { "Terminaste de jugar." } else { "Vista previa detenida" });
+        }
+    }
+
+    /// F6: empezar, o pausar y seguir.
+    fn vista_f6(&mut self, ctx: &egui::Context) {
+        match self.vista.as_mut() {
+            None => self.vista_empezar(ctx),
+            Some(s) if s.fin => self.vista_empezar(ctx),
+            Some(s) => s.pausa = !s.pausa,
+        }
+    }
+
+    /// F7: un cuadro y queda en pausa.
+    fn vista_f7(&mut self, ctx: &egui::Context) {
+        if self.vista.is_none() {
+            self.vista_empezar(ctx);
+        }
+        if let Some(s) = self.vista.as_mut() {
+            s.pausa = true;
+            if !s.fin {
+                s.paso();
+            }
+        }
+    }
+
+    fn vista_barra(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
+        let f = self.facil;
+        let Some(s) = self.vista.as_ref() else { return };
+        let (pausa, fin, ver_todo) = (s.pausa, s.fin, s.ver_todo);
+        let escena = s.world.scene_def().name.clone();
+        let pendiente = s.json != self.now;
+        #[derive(PartialEq)]
+        enum A {
+            Play,
+            Paso,
+            Reiniciar,
+            Detener,
+            Desde(bool),
+            Aplicar,
+            VerTodo,
+        }
+        let mut act = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.;
+            let (icon, t) = match (pausa || fin, f) {
+                (true, true) => (ic::PLAY, if fin { "Jugar otra vez" } else { "Seguir" }),
+                (true, false) => (ic::PLAY, if fin { "Empezar de nuevo" } else { "Seguir" }),
+                (false, _) => (ic::PAUSE, "Pausa"),
+            };
+            let hint = RichText::new("F6").small().color(ON_ACCENT.gamma_multiply(0.75));
+            if primary(ui, (on_accent(icon), on_accent(t).font(sb(14.)), hint)).on_hover_text(if pausa { "Seguir jugando (F6)" } else { "Congelar el juego para mirarlo (F6)" }).clicked() {
+                act = Some(A::Play);
+            }
+            let paso = if f { "Paso a paso" } else { "Avanzar 1 cuadro" };
+            let tip = if f { "Avanza el juego un poquito y lo deja en pausa (F7)" } else { "Avanza un cuadro (1/60 s) y pausa (F7)" };
+            if ui.add_enabled(!fin, Button::new((RichText::new(ic::FOOTPRINTS).color(TEXT_MUTED), RichText::new(paso), RichText::new("F7").small().color(TEXT_FAINT)))).on_hover_text(tip).clicked() {
+                act = Some(A::Paso);
+            }
+            if ui.button(it(ic::RESTART, if f { "Otra vez" } else { "Reiniciar escena" })).on_hover_text(format!("Empezar de nuevo la escena «{escena}» (las cajitas globales se conservan)")).clicked() {
+                act = Some(A::Reiniciar);
+            }
+            if ui.button(it(ic::STOP, if f { "Terminar" } else { "Detener" })).on_hover_text("Cerrar la vista previa").clicked() {
+                act = Some(A::Detener);
+            }
+            ui.add_space(4.);
+            seg(ui, |ui| {
+                for v in vista::VELOCIDADES {
+                    let t = if v == 0.25 { "0.25x".to_string() } else if v == 0.5 { "0.5x".into() } else { format!("{v:.0}x") };
+                    let tip = if v < 1. { "Cámara lenta" } else if v > 1. { "Rápido" } else { "Velocidad normal" };
+                    if seg_btn(ui, self.vprefs.vel == v, t).on_hover_text(tip).clicked() {
+                        self.vprefs.vel = v;
+                    }
+                }
+            });
+            let aqui = self.vprefs.desde_aqui;
+            let editando = self.p.scenes[self.sc].name.clone();
+            let mostrar = if aqui { format!("Esta escena ({editando})") } else { format!("Escena inicial ({})", self.p.first_scene) };
+            ui.label(muted("Empezar en"));
+            egui::ComboBox::from_id_salt("vista_desde").selected_text(mostrar).show_ui(ui, |ui| {
+                if ui.selectable_label(!aqui, format!("Escena inicial ({})", self.p.first_scene)).clicked() && aqui {
+                    act = Some(A::Desde(false));
+                }
+                if ui.selectable_label(aqui, format!("Empezar en esta escena ({editando})")).clicked() && !aqui {
+                    act = Some(A::Desde(true));
+                }
+            }).response.on_hover_text("Dónde empieza el juego al apretar Jugar aquí (cambiarlo empieza de nuevo)");
+            let r = seg(ui, |ui| seg_btn(ui, self.vprefs.recargar, it(ic::ARROWS_CLOCKWISE, "Recargar al cambiar")));
+            if r.on_hover_text("Cuando cambias algo del juego, la vista previa se actualiza sola: la escena empieza de nuevo y se conservan las cajitas globales y la partida guardada").clicked() {
+                self.vprefs.recargar = !self.vprefs.recargar;
+            }
+            if pendiente && !self.vprefs.recargar && primary(ui, (on_accent(ic::ARROWS_CLOCKWISE), on_accent("Aplicar cambios"))).on_hover_text("Hay cambios que la vista previa todavía no usa").clicked() {
+                act = Some(A::Aplicar);
+            }
+            if ui.add(Button::selectable(ver_todo, RichText::new(ic::FRAME_CORNERS).size(16.)).min_size(Vec2::splat(28.)))
+                .on_hover_text("Ver toda la escena (el rectángulo azul es lo que ve la cámara)").clicked() {
+                act = Some(A::VerTodo);
+            }
+            ui.label(RichText::new(ic::SPEAKER_SLASH).size(16.).color(TEXT_MUTED)).on_hover_text("La vista previa no reproduce sonido; usa Probar (F5)");
+            let g = self.vprefs.grande;
+            let (icon, tip) = if g { (ic::CORNERS_IN, "Achicar: dejar el juego abajo y seguir editando") } else { (ic::CORNERS_OUT, "Agrandar: el juego ocupa todo el centro") };
+            if ib(ui, icon, tip).clicked() {
+                self.vprefs.grande = !g;
+            }
+        });
+        match act {
+            Some(A::Play) => self.vista_f6(&ctx),
+            Some(A::Paso) => self.vista_f7(&ctx),
+            Some(A::Reiniciar) => {
+                if let Some(s) = self.vista.as_mut() {
+                    s.reiniciar_escena();
+                }
+            }
+            Some(A::Detener) => self.vista_detener(),
+            Some(A::Desde(v)) => {
+                self.vprefs.desde_aqui = v;
+                self.vista_empezar(&ctx);
+            }
+            Some(A::Aplicar) => self.vista_recargar(&ctx),
+            Some(A::VerTodo) => {
+                if let Some(s) = self.vista.as_mut() {
+                    s.ver_todo = !s.ver_todo;
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Barra, depurador al costado y el juego.
+    fn vista_ui(&mut self, ui: &mut Ui) {
+        egui::Panel::top("vista_barra").frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(10, 6))).show(ui, |ui| self.vista_barra(ui));
+        let facil = self.facil;
+        if let Some(s) = self.vista.as_mut() {
+            egui::Panel::right("depurador").resizable(true).default_size(if facil { 320. } else { 340. }).size_range(260.0..=560.)
+                .frame(Frame::new().fill(PANEL).inner_margin(10)).show(ui, |ui| depurador::panel(ui, s, facil));
+        }
+        self.vista_juego(ui);
+    }
+
+    fn vista_juego(&mut self, ui: &mut Ui) {
+        let facil = self.facil;
+        let t = self.t;
+        let Some(s) = self.vista.as_mut() else { return };
+        let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
+        painter.rect_filled(resp.rect, 0., Color32::BLACK);
+        let (m, quads) = vista::dibujar(&painter, resp.rect.shrink(6.), s);
+        s.marco = Some(m);
+        vista::medir_textos(ui.ctx(), &mut s.world);
+        // Foco de teclado: clic en el juego. Las flechas, Tab y Esc van al juego y no mueven el foco del editor.
+        if std::mem::take(&mut s.pedir_foco) || resp.clicked() || resp.drag_started() {
+            resp.request_focus();
+        } else if resp.clicked_elsewhere() {
+            ui.memory_mut(|mm| mm.surrender_focus(resp.id));
+        }
+        ui.memory_mut(|mm| mm.set_focus_lock_filter(resp.id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true }));
+        s.foco = resp.has_focus();
+        // Elegir una instancia: clic en pausa, o Alt+clic mientras corre. Los mapas solo si no hay otra cosa debajo.
+        let alt = ui.input(|i| i.modifiers.alt);
+        if resp.clicked() && (s.pausa || s.fin || alt) {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let w = &s.world;
+                let es_mapa = |i: usize| matches!(w.object_def(&w.insts[i].obj).map(|d| &d.kind), Some(Kind::Tilemap { .. }));
+                let bajo: Vec<usize> = quads.iter().rev().filter(|(_, q)| vista::dentro(q, p)).map(|x| x.0).collect();
+                let i = bajo.iter().find(|&&i| !es_mapa(i)).or(bajo.first()).copied();
+                s.sel = i.map(|i| w.insts[i].id);
+            }
+        }
+        let pa = painter.with_clip_rect(resp.rect);
+        if let Some(i) = s.elegida() {
+            if let Some((_, q)) = quads.iter().find(|(k, _)| *k == i) {
+                pa.add(egui::Shape::closed_line(q.to_vec(), Stroke::new(4., Color32::from_black_alpha(170))));
+                pa.add(egui::Shape::closed_line(q.to_vec(), Stroke::new(2., ACCENT)));
+                let top = q.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+                let cx = q.iter().map(|p| p.x).sum::<f32>() / 4.;
+                let at = Pos2::new(cx, (top - 4.).max(resp.rect.top() + 26.));
+                chip(&pa, at, Align2::CENTER_BOTTOM, ic::CROSSHAIR, &s.world.insts[i].obj, ACCENT);
+            }
+        }
+        if s.foco {
+            pa.rect_stroke(m.rect.expand(2.), 2, Stroke::new(2., ACCENT), egui::StrokeKind::Outside);
+        }
+        // Arriba a la derecha: los marcadores (HUD) suelen ir a la izquierda.
+        let arriba = Pos2::new(m.rect.right() - 8., m.rect.top() + 8.);
+        if s.fin {
+            let t = if facil { "El juego terminó. Aprieta «Jugar otra vez»." } else { "El juego pidió terminar (acción Salir)" };
+            chip(&pa, m.rect.center(), Align2::CENTER_CENTER, ic::DOOR_OPEN, t, TEXT);
+        } else if s.pausa {
+            let t = if facil { "En pausa: toca algo del juego para ver qué es" } else { "En pausa: clic para elegir una instancia" };
+            chip(&pa, arriba, Align2::RIGHT_TOP, ic::PAUSE, t, WARN);
+        } else if !s.foco {
+            let t = if facil { "Haz clic en el juego para jugar con el teclado" } else { "Clic en el juego para darle el teclado · Alt+clic elige una instancia" };
+            chip(&pa, Pos2::new(m.rect.center().x, m.rect.bottom() - 10.), Align2::CENTER_BOTTOM, ic::KEYBOARD, t, TEXT);
+        }
+        if let Some((msg, hasta)) = s.aviso.clone() {
+            if hasta > t {
+                chip(&pa, Pos2::new(m.rect.center().x, m.rect.top() + 10.), Align2::CENTER_TOP, ic::CHECK, &msg, OK);
+                ui.ctx().request_repaint();
+            } else {
+                s.aviso = None;
+            }
+        }
+        if !s.pausa && !s.fin {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// `--abrir vista…`: juego de prueba en marcha (se aplica en el primer cuadro, cuando ya hay imágenes).
+    fn vista_prueba(&mut self, ctx: &egui::Context, que: &str) {
+        if que == "vista-abajo" {
+            self.vprefs.grande = false;
+            self.tab = Tab::Eventos;
+        }
+        self.vista_empezar(ctx);
+        let Some(s) = self.vista.as_mut() else { return };
+        if que == "jugar" {
+            // Sin ensayo: el juego recibe el teclado de verdad (para probar con `--tecla`).
+            s.pestana = vista::Pestana::Registro;
+            return;
+        }
+        // El héroe camina a la derecha un par de segundos (junta monedas, suenan cosas).
+        for k in 0..150 {
+            s.entrada.down.insert("Right".into());
+            if k % 50 == 20 {
+                s.entrada.tecla(Key::Space, true);
+            } else if k % 50 == 30 {
+                s.entrada.tecla(Key::Space, false);
+            }
+            s.paso();
+        }
+        s.entrada.soltar();
+        s.pedir_foco = false;
+        let w = &s.world;
+        let heroe = w.insts.iter().find(|i| w.object_def(&i.obj).is_some_and(|d| d.behaviors.iter().any(|b| matches!(b, Behavior::Platformer { .. } | Behavior::TopDown { .. }))))
+            .or_else(|| w.insts.iter().find(|i| w.object_def(&i.obj).is_some_and(|d| matches!(d.kind, Kind::Sprite { .. }))))
+            .map(|i| i.id);
+        match que {
+            "vista-pausa" => {
+                s.pausa = true;
+                s.sel = heroe;
+            }
+            "depurador" => s.sel = heroe,
+            "registro" => s.pestana = vista::Pestana::Registro,
+            "rendimiento" => {
+                s.pestana = vista::Pestana::Rendimiento;
+                s.ver_todo = true;
+            }
+            "recarga" => {
+                s.pestana = vista::Pestana::Registro;
+                // Un cambio en el proyecto (fondo rojizo y una moneda más): la recarga en caliente lo aplica al terminar el cuadro.
+                let sc = self.sc;
+                self.p.scenes[sc].background = [120, 60, 90];
+                if let Some(m) = self.p.scenes[sc].instances.iter().find(|i| i.obj == "Moneda").cloned() {
+                    self.p.scenes[sc].instances.push(Instance { x: m.x + 64., ..m });
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -3053,6 +3429,14 @@ impl eframe::App for App {
             return self.bienvenida(ui);
         }
 
+        if let Some(q) = self.vista_abrir.take() {
+            self.vista_prueba(&ctx, &q);
+        }
+        // Vista previa: el teclado del juego se lee antes de los atajos (si el juego tiene el foco, sus teclas no llegan al editor).
+        if let Some(s) = self.vista.as_mut() {
+            s.leer(&ctx);
+        }
+
         // Atajos
         let typing = ctx.egui_wants_keyboard_input();
         let modal = self.ed.is_some() || self.exp.is_some() || self.confirm.is_some() || self.sel.is_some() || self.rec.is_some() || self.asis.is_some()
@@ -3071,8 +3455,11 @@ impl eframe::App for App {
             for (key, t) in [(Key::Num1, Tab::Escena), (Key::Num2, Tab::Eventos), (Key::Num3, Tab::Funciones), (Key::Num4, Tab::Variables)] {
                 if !modal && i.consume_key(cmd, key) {
                     self.tab = t;
+                    self.vprefs.grande &= self.vista.is_none();
                 }
             }
+            let f6 = !modal && i.consume_key(Modifiers::NONE, Key::F6);
+            let f7 = !modal && i.consume_key(Modifiers::NONE, Key::F7);
             // Herramientas de pintado del mapa: B, E, G, R, I.
             if scene_keys && self.pintando().is_some() {
                 if let Some(h) = mapa::Herr::TODAS.into_iter().find(|h| i.consume_key(Modifiers::NONE, h.tecla())) {
@@ -3086,9 +3473,18 @@ impl eframe::App for App {
                     nudge += d * i.count_and_consume_key(Modifiers::NONE, key) as f32;
                 }
             }
-            (save_as, save, i.consume_key(Modifiers::NONE, Key::F5) && !modal, undo, redo, dup, del, esc, nudge)
+            (save_as, save, i.consume_key(Modifiers::NONE, Key::F5) && !modal, undo, redo, dup, del, esc, nudge, f6, f7)
         });
-        let (save_as, save, run, undo, redo, dup, del, esc, nudge) = k;
+        let (save_as, save, run, undo, redo, dup, del, esc, nudge, f6, f7) = k;
+        if f6 {
+            self.vista_f6(&ctx);
+        }
+        if f7 {
+            self.vista_f7(&ctx);
+        }
+        if let Some(s) = self.vista.as_mut() {
+            s.avanzar(self.t, self.vprefs.vel);
+        }
         if save_as {
             self.save(true);
         } else if save {
@@ -3119,23 +3515,31 @@ impl eframe::App for App {
         let side = Frame::new().fill(PANEL).inner_margin(12);
         egui::Panel::top("barra").exact_size(44.).frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(8, 0))).show(ui, |ui| self.top_bar(ui));
         egui::Panel::bottom("estado").exact_size(28.).frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(12, 0))).show(ui, |ui| self.status(ui));
+        // Vista previa: abajo (para seguir editando) o en todo el centro.
+        let grande = self.vista.is_some() && self.vprefs.grande;
+        if self.vista.is_some() && !grande {
+            egui::Panel::bottom("vista_dock").resizable(true).default_size(400.).size_range(220.0..=1200.).frame(Frame::new().fill(BG))
+                .show(ui, |ui| self.vista_ui(ui));
+        }
         if self.mis.abierto {
             egui::Panel::right("misiones").exact_size(misiones::ANCHO).frame(side).show(ui, |ui| self.mis.ui(ui, &self.p));
         }
         // En Mis bloques (modo fácil) el panel de la escena no se usa: más lugar para el bloque.
-        if !(self.facil && self.tab == Tab::Funciones) {
+        if !grande && !(self.facil && self.tab == Tab::Funciones) {
             egui::Panel::left("izq").default_size(290.).size_range(240.0..=480.).frame(side)
                 .show(ui, |ui| egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.left(ui)));
         }
-        if self.tab == Tab::Escena {
+        if !grande && self.tab == Tab::Escena {
             egui::Panel::right("der").default_size(300.).size_range(240.0..=480.).frame(side)
                 .show(ui, |ui| egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.right(ui)));
         }
         let margin = match self.tab {
+            _ if grande => Margin::ZERO,
             Tab::Escena | Tab::Funciones => Margin::ZERO,
             _ => Margin::same(12),
         };
         egui::CentralPanel::default_margins().frame(Frame::new().fill(BG).inner_margin(margin)).show(ui, |ui| match self.tab {
+            _ if grande => self.vista_ui(ui),
             Tab::Escena => self.canvas(ui),
             Tab::Eventos => self.sheet(ui, Target::Scene(self.sc)),
             Tab::Funciones => self.funcs(ui),
@@ -3178,6 +3582,11 @@ impl eframe::App for App {
         let now = self.json();
         if !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {
             self.hist.commit(&now);
+        }
+        // Recarga en caliente de la vista previa, cuando termina la interacción (no a mitad de un arrastre o mientras se escribe).
+        let quieto = !ctx.input(|i| i.pointer.any_down()) && (!ctx.egui_wants_keyboard_input() || self.vista.as_ref().is_some_and(|s| s.foco));
+        if self.vprefs.recargar && quieto && self.vista.as_ref().is_some_and(|s| s.json != now) {
+            self.vista_recargar(&ctx);
         }
         // Revisión del proyecto (solo cuando cambió).
         if self.facil && now != self.probs_de {

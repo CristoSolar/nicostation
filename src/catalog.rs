@@ -23,6 +23,10 @@ pub enum P {
     Var,
     /// Función propia; los argumentos siguientes son sus parámetros.
     Func,
+    /// Curva de suavizado: linear, ease_in, ease_out, ease_in_out, back, elastic, bounce.
+    Ease,
+    /// Código Rhai (varias líneas).
+    Code,
 }
 
 pub struct Meta {
@@ -70,9 +74,11 @@ pub const CATALOG: &[Meta] = &[
     m!(true, "falling", "Movimiento", "Cayendo", "_0_ está cayendo", ["Objeto": Object]),
     m!(true, "on_ladder", "Movimiento", "En una escalera", "_0_ está en una escalera", ["Objeto": Object]),
     m!(true, "grabbing", "Movimiento", "Agarrado a un borde", "_0_ está agarrado a un borde", ["Objeto": Object]),
+    m!(true, "tweening", "Movimiento", "Moviéndose suave", "_0_ está en un movimiento suave", ["Objeto": Object]),
     m!(true, "is_moving", "Movimiento", "Moviéndose", "_0_ se está moviendo", ["Objeto": Object]),
     m!(true, "alarm", "Tiempo", "Alarma", "Sonó la alarma «_1_» de _0_", ["Objeto": Object, "Nombre": Text]),
     m!(true, "compare", "Variables", "Comparar dos valores", "_0_ _1_ _2_", ["Valor": Expr, "Comparación": Op, "Otro valor": Expr]),
+    m!(true, "script_if", "Funciones", "Condición en código", "Código: _0_", ["Código Rhai": Code]),
     m!(true, "call_cond", "Funciones", "Condición propia", "_0_(_args_)", ["Función": Func]),
     // ---- acciones ----
     m!(false, "create", "Objetos", "Crear objeto", "Crear _0_ en (_1_, _2_) en la capa _3_", ["Objeto": Object, "X": Expr, "Y": Expr, "Capa": Layer]),
@@ -85,6 +91,7 @@ pub const CATALOG: &[Meta] = &[
     m!(false, "look_at", "Objetos", "Mirar hacia", "Girar _0_ hacia (_1_, _2_)", ["Objeto": Object, "X": Expr, "Y": Expr]),
     m!(false, "separate", "Objetos", "Separar de", "Sacar a _0_ de encima de _1_", ["Objeto": Object, "Obstáculo": Object]),
     m!(false, "set_tile", "Objetos", "Cambiar baldosa", "Poner la baldosa _3_ en la columna _1_, fila _2_ de _0_", ["Mapa": Object, "Columna": Expr, "Fila": Expr, "Baldosa (-1 = vacía)": Expr]),
+    m!(false, "tween", "Movimiento", "Cambio suave", "Llevar _1_ de _0_ a _2_ en _3_ s (curva _4_)", ["Objeto": Object, "Propiedad": Prop, "Valor final": Expr, "Segundos": Expr, "Curva": Ease]),
     m!(false, "jump", "Movimiento", "Saltar", "Hacer saltar a _0_", ["Objeto": Object]),
     m!(false, "set_var", "Variables", "Variable de escena", "Variable _0_ = _1_", ["Variable": Var, "Valor": Expr]),
     m!(false, "add_var", "Variables", "Sumar a variable", "Sumar _1_ a la variable _0_", ["Variable": Var, "Valor": Expr]),
@@ -96,6 +103,10 @@ pub const CATALOG: &[Meta] = &[
     m!(false, "change_scene", "Escena", "Cambiar de escena", "Ir a la escena _0_", ["Escena": Scene]),
     m!(false, "restart_scene", "Escena", "Reiniciar escena", "Reiniciar la escena", []),
     m!(false, "camera", "Escena", "Centrar cámara", "Centrar la cámara en (_0_, _1_)", ["X": Expr, "Y": Expr]),
+    m!(false, "camera_follow", "Escena", "Cámara sigue", "La cámara sigue a _0_ (suavidad _1_)", ["Objeto": Object, "Suavidad 0 a 0.99": Expr]),
+    m!(false, "camera_bounds", "Escena", "Límites de cámara", "Cámara dentro de (_0_, _1_) a (_2_, _3_)", ["X izquierda": Expr, "Y arriba": Expr, "X derecha": Expr, "Y abajo": Expr]),
+    m!(false, "camera_shake", "Escena", "Temblor de cámara", "Hacer temblar la cámara _0_ px durante _1_ s", ["Intensidad px": Expr, "Segundos": Expr]),
+    m!(false, "camera_zoom_to", "Escena", "Zoom suave", "Llevar el zoom a _0_ en _1_ s", ["Zoom": Expr, "Segundos": Expr]),
     m!(false, "camera_zoom", "Escena", "Zoom de cámara", "Zoom de la cámara = _0_", ["Zoom": Expr]),
     m!(false, "play_sound", "Audio", "Reproducir sonido", "Reproducir _0_ al volumen _1_", ["Archivo": File, "Volumen 0-100": Expr]),
     m!(false, "play_music", "Audio", "Reproducir música", "Reproducir música _0_ en bucle al volumen _1_", ["Archivo": File, "Volumen 0-100": Expr]),
@@ -103,11 +114,13 @@ pub const CATALOG: &[Meta] = &[
     m!(false, "stop_sound", "Audio", "Detener un sonido", "Detener el sonido _0_", ["Archivo": File]),
     m!(false, "save_value", "Variables", "Guardar en la partida", "Guardar _1_ en la partida como «_0_»", ["Nombre": Text, "Valor": Expr]),
     m!(false, "erase_saved", "Variables", "Borrar de la partida", "Borrar «_0_» de la partida guardada", ["Nombre": Text]),
+    m!(false, "script", "Funciones", "Ejecutar código", "Código: _0_", ["Código Rhai": Code]),
     m!(false, "call", "Funciones", "Acción propia", "_0_(_args_)", ["Función": Func]),
     m!(false, "return", "Funciones", "Devolver (condición propia)", "Devolver _0_", ["Verdadero/falso": Expr]),
     m!(false, "quit", "Escena", "Salir del juego", "Salir del juego", []),
 ];
 
+pub const EASES: &[&str] = &["linear", "ease_in", "ease_out", "ease_in_out", "back", "elastic", "bounce"];
 pub const OPS: &[&str] = &["=", "!=", "<", "<=", ">", ">="];
 pub const MOUSE: &[&str] = &["Left", "Right", "Middle"];
 pub const KEYS: &[&str] = &[
@@ -117,7 +130,7 @@ pub const KEYS: &[&str] = &[
     "Key5", "Key6", "Key7", "Key8", "Key9",
 ];
 /// Propiedades de objeto conocidas (además, cualquier otro nombre es una variable del objeto).
-pub const PROPS: &[&str] = &["x", "y", "cx", "cy", "w", "h", "angle", "opacity", "z", "speed"];
+pub const PROPS: &[&str] = &["x", "y", "cx", "cy", "w", "h", "angle", "opacity", "z", "speed", "visible", "scale_x", "scale_y", "tint"];
 
 pub fn meta(op: &str) -> Option<&'static Meta> {
     CATALOG.iter().find(|m| m.op == op)
@@ -188,6 +201,12 @@ pub fn kid(op: &str) -> Kid {
         "look_at" => ("Gira el objeto para que mire hacia un punto. Ejemplo: el enemigo mira al héroe.", false),
         "separate" => ("Empuja al objeto hacia afuera para que no atraviese el otro. Ejemplo: que el héroe no atraviese las paredes.", true),
         "set_tile" => ("Cambia una baldosa del mapa: sirve para romper bloques o abrir puertas. -1 la deja vacía.", false),
+        "tween" => ("Cambia un dato poco a poco en vez de golpe: mover, agrandar o hacer transparente con suavidad. La curva decide cómo: «bounce» rebota, «elastic» es como un resorte.", true),
+        "tweening" => ("Se cumple mientras el objeto está en un cambio suave.", false),
+        "camera_follow" => ("La cámara sigue al objeto con suavidad. 0 = pegada, 0.9 = muy suave.", true),
+        "camera_bounds" => ("La cámara no muestra nada fuera de este rectángulo: pon el tamaño de tu nivel.", true),
+        "camera_shake" => ("Hace temblar la pantalla, como en una explosión.", true),
+        "camera_zoom_to" => ("Acerca o aleja la cámara poco a poco.", false),
         "jump" => ("Hace saltar al personaje de plataformas, como si apretaras la tecla de salto.", false),
         "set_var" => ("Guarda un valor en una cajita (variable) de esta escena. Ejemplo: poner vidas en 3.", true),
         "add_var" => ("Suma a una cajita (variable) de esta escena. Ejemplo: sumar 1 a los puntos.", true),
@@ -204,6 +223,8 @@ pub fn kid(op: &str) -> Kid {
         "stop_sound" => ("Detiene un sonido que está sonando.", false),
         "save_value" => ("Guarda un valor para la próxima vez que juegues, aunque cierres el juego. Ejemplo: guardar el récord. Para leerlo usa saved(\"récord\", 0).", true),
         "erase_saved" => ("Borra un valor guardado de la partida.", false),
+        "script" => ("Para programadores: ejecuta código Rhai. Puede leer y cambiar cajitas, objetos y más.", false),
+        "script_if" => ("Para programadores: código Rhai que responde verdadero o falso.", false),
         "call" => ("Usa un bloque que inventaste en «Mis bloques».", true),
         "return" => ("Dentro de un bloque-pregunta de «Mis bloques»: responde sí (1) o no (0).", false),
         "quit" => ("Cierra el juego.", false),
@@ -256,7 +277,23 @@ pub fn prop_label(p: &str) -> String {
         "opacity" => "transparencia (0 invisible, 255 normal)".into(),
         "z" => "adelante o atrás (más alto = más adelante)".into(),
         "speed" => "velocidad".into(),
+        "visible" => "visible (1 sí, 0 no)".into(),
+        "scale_x" => "tamaño a lo ancho (1 normal, 2 el doble)".into(),
+        "scale_y" => "tamaño a lo alto (1 normal, 2 el doble)".into(),
+        "tint" => "color (\"rojo\", \"#ff0000\"...)".into(),
         _ => format!("variable «{p}» del objeto"),
+    }
+}
+
+pub fn ease_label(e: &str) -> &'static str {
+    match e {
+        "ease_in" => "empieza lento",
+        "ease_out" => "termina lento",
+        "ease_in_out" => "lento al empezar y al terminar",
+        "back" => "se pasa un poquito y vuelve",
+        "elastic" => "como un resorte",
+        "bounce" => "rebota",
+        _ => "parejo",
     }
 }
 

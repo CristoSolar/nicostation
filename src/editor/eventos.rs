@@ -486,6 +486,8 @@ pub fn default_arg(t: P, l: &Lists) -> String {
         P::Op => "=".into(),
         P::Expr => "0".into(),
         P::Prop => "x".into(),
+        P::Ease => "ease_out".into(),
+        P::Code => "// tu código aquí\n".into(),
         _ => String::new(),
     }
 }
@@ -640,6 +642,7 @@ fn params_ui(ui: &mut Ui, ins: &mut Instr, l: &Lists) {
                 P::Key => drop(combo(ui, k, v, catalog::KEYS, "(elegir)")),
                 P::Mouse => drop(combo(ui, k, v, catalog::MOUSE, "(elegir)")),
                 P::Op => drop(combo(ui, k, v, catalog::OPS, "(elegir)")),
+                P::Ease => drop(combo(ui, k, v, catalog::EASES, "(elegir)")),
                 P::Scene => drop(combo(ui, k, v, &l.scenes, "(elegir)")),
                 P::Layer => drop(combo(ui, k, v, &l.layers, "(base)")),
                 P::Func => {
@@ -671,6 +674,7 @@ fn params_ui(ui: &mut Ui, ins: &mut Instr, l: &Lists) {
                     expr_error(ui, v);
                 })),
                 P::Text | P::Var => drop(ui.add(TextEdit::singleline(v).desired_width(fw))),
+                P::Code => codigo(ui, v, fw + 160.),
             }
             ui.end_row();
             if t == P::Func {
@@ -695,4 +699,59 @@ fn params_ui(ui: &mut Ui, ins: &mut Instr, l: &Lists) {
     if matches!(m.op, "or" | "and") {
         ui.label(RichText::new("Las sub-condiciones se agregan en la hoja con «+ Sub-condición».").color(TEXT_MUTED));
     }
+}
+
+/// Funciones que se pueden usar dentro del código Rhai (para la ayuda).
+pub const AYUDA_CODIGO: &str = "Dentro del código puedes usar:\n\
+get_var(n) / set_var(n, v), get_global(n) / set_global(n, v), saved(n) / save(n, v)\n\
+picked(obj) / all(obj) (ids), count(obj), object(id), exists(id)\n\
+prop(id, p) / set_prop(id, p, v), create(obj, x, y) (id), destroy(id)\n\
+key_down(k) / key_pressed(k), mouse_x() / mouse_y()\n\
+random(a, b), dt(), time(), dsin / dcos / point_angle / point_distance\n\
+play_sound(f), change_scene(n), log(msg)";
+
+/// Colorea código Rhai: palabras clave, textos, números y comentarios.
+fn colorear_codigo(src: &str, font: FontId) -> LayoutJob {
+    const CLAVES: &[&str] = &["let", "const", "if", "else", "fn", "for", "in", "while", "loop", "return", "break", "continue", "true", "false", "switch"];
+    let mut j = LayoutJob::default();
+    let fmt = |c: egui::Color32| TextFormat { font_id: font.clone(), color: c, ..Default::default() };
+    let (mut i, b) = (0, src.as_bytes());
+    while i < src.len() {
+        let rest = &src[i..];
+        let (len, c) = if rest.starts_with("//") {
+            (rest.find('\n').unwrap_or(rest.len()), TEXT_FAINT)
+        } else if rest.starts_with('"') {
+            (rest[1..].find('"').map_or(rest.len(), |k| k + 2), OK)
+        } else if b[i].is_ascii_digit() {
+            (rest.find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '_')).unwrap_or(rest.len()), CAT_MOV)
+        } else if b[i].is_ascii_alphabetic() || b[i] == b'_' {
+            let n = rest.find(|ch: char| !(ch.is_alphanumeric() || ch == '_')).unwrap_or(rest.len());
+            (n, if CLAVES.contains(&&rest[..n]) { ACCENT } else { TEXT })
+        } else {
+            (rest.chars().next().map_or(1, |ch| ch.len_utf8()), TEXT_SOFT)
+        };
+        j.append(&rest[..len], 0., fmt(c));
+        i += len;
+    }
+    j
+}
+
+/// Editor de código Rhai de varias líneas, con colores y revisión en vivo.
+pub fn codigo(ui: &mut Ui, v: &mut String, w: f32) {
+    let font = FontId::monospace(13.);
+    let mut lay = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+        let mut j = colorear_codigo(buf.as_str(), font.clone());
+        j.wrap.max_width = wrap;
+        ui.fonts_mut(|f| f.layout_job(j))
+    };
+    ui.vertical(|ui| {
+        ui.add(TextEdit::multiline(v).code_editor().desired_rows(6).desired_width(w).layouter(&mut lay));
+        ui.horizontal_wrapped(|ui| {
+            match nicostation::script::check(v) {
+                Ok(()) => drop(ui.label(RichText::new(format!("{}  El código se entiende", ic::CHECK)).color(OK))),
+                Err(e) => drop(ui.label(RichText::new(format!("{}  {e}", ic::WARNING)).color(DANGER))),
+            }
+            ui.label(RichText::new(ic::QUESTION).color(TEXT_MUTED)).on_hover_text(AYUDA_CODIGO);
+        });
+    });
 }

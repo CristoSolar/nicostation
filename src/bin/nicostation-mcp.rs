@@ -952,6 +952,16 @@ acción sobre ese objeto es la instancia actual; si no, la primera elegida.
 Para algo que ocurre una vez al entrar a la escena usa la condición "start". Para no repetir cada frame, "trigger_once".
 "wait" (esperar N segundos) deja las acciones siguientes y los sub-eventos para después, con las mismas instancias.
 Alarmas por instancia: set_alarm(obj, nombre, seg) y la condición alarm(obj, nombre).
+Tweens: tween(obj, prop, valor_final, seg, curva) con curva linear|ease_in|ease_out|ease_in_out|back|elastic|bounce.
+Cámara: camera_follow(obj, suavidad), camera_bounds(x0,y0,x1,y1), camera_shake(px, seg), camera_zoom_to(zoom, seg).
+
+## Scripts (Rhai) para lógica compleja
+Acción script(código) y condición script_if(código, el último valor es verdadero/falso). Funciones disponibles:
+get_var/set_var, get_global/set_global, saved(k, defecto)/save(k, v), picked(obj) y all(obj) (arrays de ids), count(obj),
+prop(id, p)/set_prop(id, p, v), object(id), exists(id), create(obj, x, y) -> id, destroy(id), key_down(k), key_pressed(k),
+mouse_x(), mouse_y(), random(a, b), dt(), time(), play_sound(archivo), change_scene(nombre), log(texto),
+dsin/dcos (grados), point_angle(x1,y1,x2,y2), point_distance(...). Números con decimales: escribe 1.0, no 1.
+Ejemplo: for id in picked("Enemigo") { set_prop(id, "x", prop(id, "x") + 60.0 * dt()); }
 
 ## Condiciones
 "#;

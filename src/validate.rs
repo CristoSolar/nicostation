@@ -137,10 +137,16 @@ fn instr(c: &Ctx, i: &Instr, cond: bool, at: &str, out: &mut Vec<String>) {
             P::Scene if c.p.scene(a).is_none() => out.push(bad("escena desconocida")),
             P::Op if !catalog::OPS.contains(&a.as_str()) => out.push(bad(&format!("operador inválido, usa uno de {:?}", catalog::OPS))),
             P::Key if !catalog::KEYS.contains(&a.as_str()) => out.push(bad("tecla desconocida (ver catálogo)")),
+            P::Ease if !catalog::EASES.contains(&a.as_str()) => out.push(bad(&format!("curva desconocida, usa una de {:?}", catalog::EASES))),
             P::Mouse if !catalog::MOUSE.contains(&a.as_str()) => out.push(bad("botón desconocido: Left, Right o Middle")),
             P::Layer if !c.layers.is_empty() && !c.layers.contains(&a.as_str()) => out.push(bad("capa desconocida (\"\" = capa base)")),
             P::File if !(c.file_ok)(a) => out.push(bad("el archivo no existe")),
             P::Expr => expr(a, &format!("{at} › argumento {}", k + 1), out),
+            P::Code => {
+                if let Err(e) = crate::script::check(a) {
+                    out.push(bad(&format!("el código tiene un error: {e}")));
+                }
+            }
             P::Anim => {
                 let anims = i.args.first().and_then(|o| c.objs.iter().find(|d| &d.name == o)).and_then(|d| match &d.kind {
                     Kind::Sprite { animations, .. } => Some(animations.iter().map(|x| x.name.as_str()).collect::<Vec<_>>()),
