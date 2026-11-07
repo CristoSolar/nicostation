@@ -23,6 +23,40 @@ fn conf() -> Conf {
     c
 }
 
+/// Botones táctiles: (centro, radio, tecla). Cruceta de 4 direcciones o izquierda/derecha, más el botón de acción.
+fn touch_buttons(sw: f32, sh: f32, four_way: bool) -> Vec<(Vec2, f32, &'static str)> {
+    let r = (sw.min(sh) * 0.08).clamp(32., 64.);
+    let m = r * 1.5;
+    let action = (vec2(sw - m, sh - m), r * 1.25, "Space");
+    if four_way {
+        let d = r * 2.1;
+        let c = vec2(d + r + 12., sh - d - r - 12.);
+        vec![(c - vec2(d, 0.), r, "Left"), (c + vec2(d, 0.), r, "Right"), (c - vec2(0., d), r, "Up"), (c + vec2(0., d), r, "Down"), action]
+    } else {
+        vec![(vec2(m, sh - m), r, "Left"), (vec2(m + r * 2.6, sh - m), r, "Right"), action]
+    }
+}
+
+fn draw_touch_buttons(buttons: &[(Vec2, f32, &str)], held: &std::collections::HashSet<&str>) {
+    for (c, r, k) in buttons {
+        let on = held.contains(k);
+        draw_circle(c.x, c.y, *r, Color::new(1., 1., 1., if on { 0.35 } else { 0.18 }));
+        draw_circle_lines(c.x, c.y, *r, 2., Color::new(1., 1., 1., 0.5));
+        let a = r * 0.45;
+        let (p1, p2, p3) = match *k {
+            "Left" => (vec2(-a, 0.), vec2(a * 0.6, -a), vec2(a * 0.6, a)),
+            "Right" => (vec2(a, 0.), vec2(-a * 0.6, -a), vec2(-a * 0.6, a)),
+            "Up" => (vec2(0., -a), vec2(-a, a * 0.6), vec2(a, a * 0.6)),
+            "Down" => (vec2(0., a), vec2(-a, -a * 0.6), vec2(a, -a * 0.6)),
+            _ => {
+                draw_circle(c.x, c.y, r * 0.35, Color::new(1., 1., 1., 0.6));
+                continue;
+            }
+        };
+        draw_triangle(*c + p1, *c + p2, *c + p3, Color::new(1., 1., 1., 0.7));
+    }
+}
+
 fn key_name(k: KeyCode) -> String {
     format!("{k:?}")
 }
@@ -94,6 +128,12 @@ async fn game() {
         }
     }
 
+    // Cruceta de 4 direcciones si el juego se mueve en vista de arriba.
+    let four_way = project.objects.iter().chain(project.scenes.iter().flat_map(|s| s.objects.iter()))
+        .any(|o| o.behaviors.iter().any(|b| matches!(b, nicostation::model::Behavior::TopDown { .. })));
+    // NICOSTATION_TACTIL=1 muestra los botones desde el inicio (para probar sin pantalla táctil).
+    let mut touch_seen = cfg!(not(target_arch = "wasm32")) && std::env::var_os("NICOSTATION_TACTIL").is_some();
+    let mut touch_prev: std::collections::HashSet<&str> = Default::default();
     let mut world = World::new(project);
     let mut sounds: HashMap<String, Sound> = HashMap::new();
     let mut music: Option<Sound> = None;
@@ -104,10 +144,24 @@ async fn game() {
         let off = vec2((screen_width() - p.width * scale) / 2., (screen_height() - p.height * scale) / 2.);
 
         let (mx, my) = mouse_position();
+        // Toques: los botones en pantalla aparecen la primera vez que se toca (celular o tablet).
+        let ts = touches();
+        touch_seen |= !ts.is_empty();
+        let buttons = if touch_seen { touch_buttons(screen_width(), screen_height(), four_way) } else { vec![] };
+        let held: std::collections::HashSet<&str> = buttons.iter()
+            .filter(|(c, r, _)| ts.iter().any(|t| !matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled) && t.position.distance(*c) < r * 1.2))
+            .map(|b| b.2).collect();
+        let mut down: std::collections::HashSet<String> = get_keys_down().into_iter().map(key_name).collect();
+        let mut pressed: std::collections::HashSet<String> = get_keys_pressed().into_iter().map(key_name).collect();
+        let mut released: std::collections::HashSet<String> = get_keys_released().into_iter().map(key_name).collect();
+        down.extend(held.iter().map(|k| k.to_string()));
+        pressed.extend(held.difference(&touch_prev).map(|k| k.to_string()));
+        released.extend(touch_prev.difference(&held).map(|k| k.to_string()));
+        touch_prev = held.clone();
         let input = Input {
-            down: get_keys_down().into_iter().map(key_name).collect(),
-            pressed: get_keys_pressed().into_iter().map(key_name).collect(),
-            released: get_keys_released().into_iter().map(key_name).collect(),
+            down: down.into_iter().collect(),
+            pressed: pressed.into_iter().collect(),
+            released: released.into_iter().collect(),
             mouse: ((mx - off.x) / scale, (my - off.y) / scale),
             mouse_down: [MouseButton::Left, MouseButton::Right, MouseButton::Middle].map(is_mouse_button_down),
             mouse_pressed: [MouseButton::Left, MouseButton::Right, MouseButton::Middle].map(is_mouse_button_pressed),
@@ -219,6 +273,7 @@ async fn game() {
         draw_rectangle(sw - off.x, 0., off.x, sh, BLACK);
         draw_rectangle(0., 0., sw, off.y, BLACK);
         draw_rectangle(0., sh - off.y, sw, off.y, BLACK);
+        draw_touch_buttons(&buttons, &held);
         // El tamaño real del texto, para colisiones y "cursor sobre".
         for i in 0..world.insts.len() {
             if let Some(Kind::Text { size, .. }) = world.object_def(&world.insts[i].obj).map(|d| d.kind.clone()) {
@@ -230,3 +285,25 @@ async fn game() {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn botones_tactiles_dentro_de_pantalla() {
+        for (w, h) in [(800., 600.), (390., 844.), (1920., 1080.)] {
+            for four in [false, true] {
+                let b = super::touch_buttons(w, h, four);
+                assert_eq!(b.len(), if four { 5 } else { 3 });
+                for (c, r, _) in &b {
+                    assert!(c.x - r >= 0. && c.x + r <= w && c.y - r >= 0. && c.y + r <= h, "{w}x{h}: botón fuera");
+                }
+                // Que no se pisen entre sí.
+                for (i, a) in b.iter().enumerate() {
+                    for c in &b[i + 1..] {
+                        assert!(a.0.distance(c.0) >= a.1 + c.1, "{w}x{h}: botones superpuestos");
+                    }
+                }
+            }
+        }
+    }
+}
