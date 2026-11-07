@@ -68,6 +68,10 @@ pub struct Inst {
     ignore_jt: Option<u64>,
     /// Baldosas de un mapa (copia de las del objeto; las acciones pueden cambiarlas).
     pub tiles: Vec<i32>,
+    /// Alarmas en marcha: (nombre, segundos que faltan).
+    pub alarms: Vec<(String, f32)>,
+    /// Alarmas que sonaron en este frame.
+    pub fired: Vec<String>,
 }
 
 const FALLING: u8 = 0;
@@ -96,6 +100,17 @@ struct Plat {
 /// Instancias elegidas por objeto real (no por grupo). Objeto ausente = todas sus instancias.
 pub type Sol = HashMap<String, Vec<usize>>;
 
+/// Resto de un evento que quedó esperando («esperar N segundos»).
+// ponytail: las instrucciones se copian; «solo una vez» y «cada X segundos» dentro de lo que sigue a un «esperar»
+// cuentan como instrucciones nuevas en cada espera.
+struct Task {
+    at: f64,
+    acts: Vec<Instr>,
+    sub: Vec<Event>,
+    /// Instancias elegidas, por id (los índices cambian entre frames).
+    sol: HashMap<String, Vec<u64>>,
+}
+
 pub struct World {
     pub project: Rc<Project>,
     pub globals: Vars,
@@ -110,6 +125,7 @@ pub struct World {
     pub cmds: Vec<Cmd>,
     /// Partida guardada (la carga el reproductor al empezar; sobrevive a cerrar el juego).
     pub storage: Vars,
+    tasks: Vec<Task>,
     types: HashMap<String, ObjectDef>,
     timers: HashMap<String, f64>,
     every: HashMap<usize, f64>,
@@ -143,6 +159,7 @@ impl World {
             input: Input::default(),
             cmds: vec![],
             storage: Vars::new(),
+            tasks: vec![],
             types: HashMap::new(),
             timers: HashMap::new(),
             every: HashMap::new(),
@@ -186,6 +203,7 @@ impl World {
         self.insts.clear();
         self.vars = sc.vars.clone();
         self.timers.clear();
+        self.tasks.clear();
         self.every.clear();
         self.once_now.clear();
         self.once_last.clear();
@@ -264,9 +282,75 @@ impl World {
         out
     }
 
-    fn shapes_touch(&self, i: usize, j: usize) -> bool {
-        let b = self.shapes(j);
-        self.shapes(i).iter().any(|a| b.iter().any(|b| sat(a, b).is_some()))
+    /// Pares (de `mine`, de `others`) que se tocan (o están a menos de `dist` entre centros si dist > 0).
+    /// Grilla espacial de celdas de 128 px: cada instancia solo se compara con las de sus celdas.
+    fn hits(&self, mine: &[usize], others: &[usize], dist: f32) -> Vec<(usize, usize)> {
+        type Poly = [(f32, f32); 4];
+        let bounds = |s: &[Poly]| s.iter().flatten().fold((f32::MAX, f32::MAX, f32::MIN, f32::MIN), |b, p| (b.0.min(p.0), b.1.min(p.1), b.2.max(p.0), b.3.max(p.1)));
+        const CELL: f32 = 128.;
+        let cells = |b: (f32, f32, f32, f32)| {
+            let (x0, y0, x1, y1) = ((b.0 / CELL).floor() as i32, (b.1 / CELL).floor() as i32, (b.2 / CELL).floor() as i32, (b.3 / CELL).floor() as i32);
+            (x0, y0, x1, y1, (x1 - x0 + 1) as i64 * (y1 - y0 + 1) as i64)
+        };
+        let oth: Vec<(usize, Vec<Poly>, (f32, f32, f32, f32))> = others.iter().map(|&j| {
+            let s = self.shapes(j);
+            let b = bounds(&s);
+            (j, s, b)
+        }).filter(|o| !o.1.is_empty()).collect();
+        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        let mut big = vec![]; // instancias enormes (mapas): se prueban contra todas
+        for (k, o) in oth.iter().enumerate() {
+            let (x0, y0, x1, y1, n) = cells(o.2);
+            if n > 256 {
+                big.push(k);
+                continue;
+            }
+            for cx in x0..=x1 {
+                for cy in y0..=y1 {
+                    grid.entry((cx, cy)).or_default().push(k);
+                }
+            }
+        }
+        let mut out = vec![];
+        let mut seen = vec![usize::MAX; oth.len()];
+        for &i in mine {
+            let si = self.shapes(i);
+            if si.is_empty() {
+                continue;
+            }
+            let bi = bounds(&si);
+            let bq = (bi.0 - dist, bi.1 - dist, bi.2 + dist, bi.3 + dist);
+            let (x0, y0, x1, y1, n) = cells(bq);
+            let mut cand: Vec<usize> = big.clone();
+            if n > 1024 {
+                cand = (0..oth.len()).collect();
+            } else {
+                for cx in x0..=x1 {
+                    for cy in y0..=y1 {
+                        cand.extend(grid.get(&(cx, cy)).into_iter().flatten().copied());
+                    }
+                }
+            }
+            for k in cand {
+                if seen[k] == i {
+                    continue;
+                }
+                seen[k] = i;
+                let (j, sj, bj) = &oth[k];
+                if *j == i || bq.0 > bj.2 || bj.0 > bq.2 || bq.1 > bj.3 || bj.1 > bq.3 {
+                    continue;
+                }
+                let hit = if dist > 0. {
+                    (self.insts[i].cx() - self.insts[*j].cx()).hypot(self.insts[i].cy() - self.insts[*j].cy()) < dist
+                } else {
+                    si.iter().any(|a| sj.iter().any(|b| sat(a, b).is_some()))
+                };
+                if hit {
+                    out.push((i, *j));
+                }
+            }
+        }
+        out
     }
 
     // ---------- frame ----------
@@ -277,6 +361,8 @@ impl World {
         self.time += self.dt as f64;
         self.input = input;
         self.animate();
+        self.tick_alarms();
+        self.run_tasks();
         self.behaviors_pre();
         self.once_last = std::mem::take(&mut self.once_now);
         let p = self.project.clone();
@@ -286,6 +372,50 @@ impl World {
         self.first_frame = false;
         if let Some(s) = self.pending.take() {
             self.load_scene(&s);
+        }
+    }
+
+    fn tick_alarms(&mut self) {
+        let dt = self.dt;
+        for me in &mut self.insts {
+            me.fired.clear();
+            for (name, t) in &mut me.alarms {
+                *t -= dt;
+                if *t <= 0. {
+                    me.fired.push(name.clone());
+                }
+            }
+            me.alarms.retain(|a| a.1 > 0.);
+        }
+    }
+
+    /// Continúa los eventos que estaban esperando («esperar N segundos»), con sus mismas instancias.
+    fn run_tasks(&mut self) {
+        let now = self.time;
+        let (ready, wait): (Vec<Task>, Vec<Task>) = std::mem::take(&mut self.tasks).into_iter().partition(|t| t.at <= now);
+        self.tasks = wait;
+        for t in ready {
+            let mut sol = Sol::new();
+            for (obj, ids) in &t.sol {
+                sol.insert(obj.clone(), ids.iter().filter_map(|id| self.insts.iter().position(|i| i.id == *id && !i.dead)).collect());
+            }
+            self.body(&t.acts, &t.sub, &mut sol);
+        }
+    }
+
+    /// Acciones y luego sub-eventos; si aparece «esperar», el resto queda para después.
+    fn body(&mut self, acts: &[Instr], sub: &[Event], sol: &mut Sol) {
+        match acts.iter().position(|a| a.op == "wait") {
+            None => {
+                self.acts(acts, sol);
+                self.run_events(sub, sol);
+            }
+            Some(k) => {
+                self.acts(&acts[..k], sol);
+                let secs = self.ev(acts[k].args.first().map(String::as_str).unwrap_or("0"), sol, None).num().max(0.);
+                let ids = sol.iter().map(|(o, l)| (o.clone(), l.iter().map(|&i| self.insts[i].id).collect())).collect();
+                self.tasks.push(Task { at: self.time + secs, acts: acts[k + 1..].to_vec(), sub: sub.to_vec(), sol: ids });
+            }
         }
     }
 
@@ -341,8 +471,7 @@ impl World {
     fn run_once(&mut self, e: &Event, mut s: Sol) -> bool {
         let ok = self.conds(&e.conds, &mut s);
         if ok {
-            self.acts(&e.acts, &mut s);
-            self.run_events(&e.sub, &s);
+            self.body(&e.acts, &e.sub, &mut s);
         }
         ok
     }
@@ -485,32 +614,26 @@ impl World {
             "collides" | "near" => {
                 let others = self.pick(a(1), sol);
                 let dist = if c.op == "near" { self.ev(a(2), sol, None).num() as f32 } else { 0. };
-                let hit = |w: &World, i: usize, j: usize| {
-                    i != j
-                        && if dist > 0. {
-                            (w.insts[i].cx() - w.insts[j].cx()).hypot(w.insts[i].cy() - w.insts[j].cy()) < dist
-                        } else {
-                            w.shapes_touch(i, j)
-                        }
-                };
                 let mine = self.pick(a(0), sol);
+                let pairs = self.hits(&mine, &others, dist);
                 if c.not {
                     // Invertida: solo se filtra la primera lista (las que no tocan a ninguna).
-                    return self.filter(a(0), false, sol, |w, i| !others.iter().any(|&j| hit(w, i, j)));
+                    let touching: HashSet<usize> = pairs.iter().map(|p| p.0).collect();
+                    return self.filter(a(0), false, sol, |_, i| !touching.contains(&i));
                 }
                 let (mut ka, mut kb) = (vec![], vec![]);
-                for &i in &mine {
-                    for &j in &others {
-                        if hit(self, i, j) {
-                            if !ka.contains(&i) { ka.push(i) }
-                            if !kb.contains(&j) { kb.push(j) }
-                        }
-                    }
+                for (i, j) in pairs {
+                    if !ka.contains(&i) { ka.push(i) }
+                    if !kb.contains(&j) { kb.push(j) }
                 }
                 let ok = !ka.is_empty();
                 self.set_picked(a(0), sol, ka);
                 self.set_picked(a(1), sol, kb);
                 ok
+            }
+            "alarm" => {
+                let name = a(1).to_string();
+                self.filter(a(0), c.not, sol, |w, i| w.insts[i].fired.contains(&name))
             }
             "cursor_on" => self.filter(a(0), c.not, sol, |w, i| {
                 let (mx, my) = w.mouse_on(&w.insts[i].layer);
@@ -658,6 +781,17 @@ impl World {
                 self.cmds.push(if c.op == "play_sound" { Cmd::PlaySound { file, volume } } else { Cmd::PlayMusic { file, volume } });
             }
             "stop_music" => self.cmds.push(Cmd::StopMusic),
+            "set_alarm" => {
+                for i in self.pick(a(0), sol) {
+                    let secs = num(self, a(2), sol, Some(i));
+                    let me = &mut self.insts[i];
+                    me.alarms.retain(|x| x.0 != a(1));
+                    if secs > 0. {
+                        me.alarms.push((a(1).into(), secs));
+                    }
+                }
+            }
+            "wait" => {} // lo maneja body()
             "stop_sound" => self.cmds.push(Cmd::StopSound { file: a(0).into() }),
             "save_value" | "erase_saved" => {
                 if c.op == "save_value" {
@@ -1615,6 +1749,37 @@ mod tests {
         w.vars.insert("s".into(), Value::Num(9.));
         w.step(0.016, Input::default());
         assert_eq!(w.vars["r"], Value::Str("grande".into()));
+    }
+
+    #[test]
+    fn alarmas_esperar_y_grilla() {
+        let mut w = with(r#"[
+            {"conds":[{"op":"start"}],"acts":[{"op":"set_alarm","args":["A","bum","0.5"]},{"op":"set_var","args":["paso","1"]},
+                {"op":"wait","args":["1"]},{"op":"set_var","args":["paso","2"]},{"op":"set","args":["A","y","50"]}],
+             "sub":[{"acts":[{"op":"set_var","args":["sub","1"]}]}]},
+            {"conds":[{"op":"alarm","args":["A","bum"]}],"acts":[{"op":"add_var","args":["alarmas","picked(A)"]}]}
+        ]"#);
+        let run = |w: &mut World, secs: f32| for _ in 0..(secs * 60.) as usize { w.step(1. / 60., Input::default()) };
+        run(&mut w, 0.3);
+        assert_eq!((w.vars["paso"].clone(), w.vars.get("sub")), (Value::Num(1.), None));
+        run(&mut w, 0.4);
+        assert_eq!(w.vars["alarmas"], Value::Num(2.)); // las 2 instancias de A, una sola vez cada una
+        run(&mut w, 0.5);
+        assert_eq!((w.vars["paso"].clone(), w.vars["sub"].clone()), (Value::Num(2.), Value::Num(1.)));
+        assert_eq!(w.insts.iter().filter(|i| i.obj == "A" && i.y == 50.).count(), 2); // mismas instancias de antes
+        run(&mut w, 1.);
+        assert_eq!(w.vars["alarmas"], Value::Num(2.));
+
+        // Grilla: 400 objetos en fila, cada uno toca solo a sus vecinos.
+        let objs: String = (0..400).map(|k| format!(r#"{{"obj":"A","x":{},"y":0}}"#, k * 9)).collect::<Vec<_>>().join(",");
+        let mut w = world(&BASE.replace("EVENTS", r#"[{"conds":[{"op":"collides","args":["A","B"]}],"acts":[{"op":"add_var","args":["s","1"]}]}]"#)
+            .replace(r#"{"obj":"A","x":0,"y":0},{"obj":"A","x":50,"y":50},{"obj":"B","x":5,"y":5}"#, &format!(r#"{objs},{{"obj":"B","x":1800,"y":0}}"#)));
+        let t = std::time::Instant::now();
+        w.step(1. / 60., Input::default());
+        assert_eq!(w.vars["s"], Value::Num(1.));
+        let pairs = w.hits(&(0..400).collect::<Vec<_>>(), &(0..400).collect::<Vec<_>>(), 0.);
+        assert_eq!(pairs.len(), 399 * 2); // cada vecino en ambos sentidos
+        assert!(t.elapsed().as_millis() < 200, "lento: {:?}", t.elapsed());
     }
 
     #[test]

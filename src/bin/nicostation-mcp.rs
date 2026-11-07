@@ -950,6 +950,8 @@ las acciones del evento y sus sub-eventos afectan solo a esas. Sin condición so
 "create" deja elegida solo la instancia nueva (útil: create + set sobre ella). En expresiones, Objeto.x dentro de una
 acción sobre ese objeto es la instancia actual; si no, la primera elegida.
 Para algo que ocurre una vez al entrar a la escena usa la condición "start". Para no repetir cada frame, "trigger_once".
+"wait" (esperar N segundos) deja las acciones siguientes y los sub-eventos para después, con las mismas instancias.
+Alarmas por instancia: set_alarm(obj, nombre, seg) y la condición alarm(obj, nombre).
 
 ## Condiciones
 "#;
@@ -968,9 +970,12 @@ Var = nombre de variable; Func = función propia (los argumentos que siguen son 
 
 ## Expresiones
 Números, "texto", + - * / % ( ). Texto + algo = concatenación. Variables de escena, globales o parámetros por nombre.
+Comparaciones == != < > <= >= (también =) y lógica and, or, not: verdadero = 1, falso = 0. if(cond, a, b).
 Objeto.prop: x, y, cx, cy (centro), w, h, angle, opacity (0-255), z, speed, anim, text, o cualquier variable del objeto.
 Funciones: random(a,b) randint(a,b) abs min max clamp(v,a,b) floor ceil round sqrt pow sin cos (grados) lerp(a,b,t)
-angle(x1,y1,x2,y2) distance(x1,y1,x2,y2) str num len upper lower count(Objeto) picked(Objeto) timer("nombre").
+angle(x1,y1,x2,y2) distance(x1,y1,x2,y2) atan2(y,x) lengthdir_x(largo,dir) lengthdir_y(largo,dir) sign tan
+str num len upper lower substr(t,desde,largo?) contains(t,parte) replace(t,a,b) fixed(n,decimales) pad(n,ancho)
+count(Objeto) picked(Objeto) timer("nombre") saved("clave", por_defecto) tile(Mapa, x, y).
 Variables especiales: dt (segundos del frame), time, mousex, mousey, screen_w, screen_h. true = 1, false = 0.
 Propiedades conocidas: {:?}
 
