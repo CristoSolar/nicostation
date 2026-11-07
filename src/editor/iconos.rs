@@ -107,3 +107,14 @@ pub const ZOOM_IN: &str = "\u{e310}";
 pub const ZOOM_OUT: &str = "\u{e30e}";
 pub const PENCIL_LINE: &str = "\u{e3b2}";
 pub const SQUARE_HALF: &str = "\u{e462}";
+// Bienvenida y misiones
+pub const TROPHY: &str = "\u{e67e}";
+pub const TARGET: &str = "\u{e47c}";
+pub const STAR: &str = "\u{e46a}";
+pub const CONFETTI: &str = "\u{e81a}";
+pub const LOCK: &str = "\u{e308}";
+pub const CARET_LEFT: &str = "\u{e138}";
+pub const LIST_CHECKS: &str = "\u{eadc}";
+pub const FOLDER_PLUS: &str = "\u{e25e}";
+pub const FLAG_CHECKERED: &str = "\u{ea38}";
+pub const CIRCLE_DASHED: &str = "\u{e602}";

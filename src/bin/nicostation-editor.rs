@@ -14,7 +14,17 @@
 //! `mapa-nuevo` (como «+ Mapa»: pregunta qué baldosas usar), `sprite-nuevo` (como «+ Sprite»: dibujar o elegir imágenes),
 //! `dibujo` (editor de dibujo con una animación de prueba de 3 cuadros), `cebolla` (lo mismo, en el cuadro 2 con piel de cebolla),
 //! `baldosas` (editor de dibujo con la imagen de baldosas del mapa y su rejilla),
-//! `dibujo-guardado` (dibuja la animación de prueba y la guarda en `img/` como si se apretara «Guardar dibujo»).
+//! `dibujo-guardado` (dibuja la animación de prueba y la guarda en `img/` como si se apretara «Guardar dibujo»),
+//! `bienvenida` (pantalla «¿Qué juego quieres hacer hoy?»), `nuevo-plantilla` (bienvenida con la ventanita de nombre y
+//! carpeta de la primera plantilla abierta; Enter crea el juego), `misiones` (abre el panel de misiones),
+//! `mision-activa` (empieza la primera misión del juego y marca «¡Listo!» en su primer paso si es de los que se marcan a mano),
+//! `mision-cumplida` (lo mismo y aprieta «¡Listo!» en todos los pasos manuales: si los automáticos ya se cumplen, muestra el festejo).
+//!
+//! `--captura salida.png` dibuja el editor sin ventana (1360×820, wgpu fuera de pantalla) y guarda la imagen;
+//! con `--tecla Enter` (u otra tecla de egui) la aprieta a mitad de la captura.
+//!
+//! Sin proyecto en la línea de comandos se muestra la bienvenida. `NICOSTATION_JUEGOS` cambia la carpeta donde se
+//! proponen los juegos nuevos (por defecto `~/Juegos`); los juegos recientes van en `$XDG_CONFIG_HOME/nicostation/recientes.json`.
 //! Las opciones que crean imágenes necesitan un proyecto con archivo (escriben en su carpeta `img/`).
 
 #[path = "../editor/bloques.rs"]
@@ -37,6 +47,12 @@ mod tema;
 mod mapa;
 #[path = "../editor/dibujo.rs"]
 mod dibujo;
+#[path = "../editor/inicio.rs"]
+mod inicio;
+#[path = "../editor/misiones.rs"]
+mod misiones;
+#[path = "../editor/captura.rs"]
+mod captura;
 
 use eframe::egui::{
     self, Align, Align2, AtomExt, Button, Color32, DragValue, Frame, Key, Layout, Margin, Modifiers, PointerButton, Pos2, Rect,
@@ -144,6 +160,16 @@ struct App {
     dib: Option<dibujo::Dibujo>,
     /// Objeto recién creado que espera una elección (dibujar, elegir imágenes, baldosas).
     nuevo: Option<Nuevo>,
+    // ---- bienvenida y misiones ----
+    /// Pantalla de bienvenida (tapa todo el editor mientras está).
+    inicio: Option<inicio::Inicio>,
+    mis: misiones::Misiones,
+    /// JSON con que se revisaron las misiones por última vez.
+    mis_json: String,
+    /// Misiones de otros juegos abiertos en esta sesión (por ruta).
+    mis_sesion: HashMap<PathBuf, misiones::Misiones>,
+    /// Hora de egui del último cuadro.
+    t: f64,
 }
 
 /// Pregunta que sigue a «+ Sprite» y «+ Mapa».
@@ -654,6 +680,7 @@ impl App {
             facil: true, grande: false, aplicado: None, sel: None, rec: None, nueva_caj: None, asis: None, fnuevo: String::new(),
             probs: vec![], probs_de: String::new(), jump: None, nota: None, files: vec![], files_at: None, bar_lr: (0., 0.),
             pintor: mapa::Pintor::default(), dib: None, nuevo: None,
+            inicio: None, mis: Default::default(), mis_json: String::new(), mis_sesion: HashMap::new(), t: 0.,
         }
     }
 
@@ -663,8 +690,17 @@ impl App {
 
     fn set_project(&mut self, p: Project, path: Option<PathBuf>) {
         let kids = std::mem::take(&mut self.kids);
-        let (facil, grande) = (self.facil, self.grande);
-        *self = App { p, path, kids, facil, grande, ..App::new() };
+        let (facil, grande, t) = (self.facil, self.grande, self.t);
+        // El avance de las misiones de este juego queda guardado por si se vuelve a abrir en la sesión.
+        let mut mis_sesion = std::mem::take(&mut self.mis_sesion);
+        if let Some(old) = self.path.as_ref() {
+            mis_sesion.insert(old.clone(), std::mem::take(&mut self.mis));
+        }
+        let mis = path.as_ref().and_then(|n| mis_sesion.remove(n)).unwrap_or_else(|| misiones::Misiones::cargar(path.as_deref()));
+        if let Some(n) = path.as_ref() {
+            inicio::recordar(n);
+        }
+        *self = App { p, path, kids, facil, grande, t, mis, mis_sesion, ..App::new() };
         self.now = self.json();
         self.saved = self.now.clone();
         self.hist = Historial::new(self.now.clone());
@@ -728,7 +764,8 @@ impl App {
     }
 
     fn save(&mut self, ask: bool) -> bool {
-        if ask || self.path.is_none() {
+        let otra_ruta = ask || self.path.is_none();
+        if otra_ruta {
             let Some(p) = rfd::FileDialog::new().add_filter("Proyecto NicoStation", &["json"]).set_file_name("proyecto.json").save_file() else {
                 return false;
             };
@@ -739,6 +776,10 @@ impl App {
         let s = self.json();
         match std::fs::write(&path, &s) {
             Ok(()) => {
+                if otra_ruta {
+                    self.mis.mover(&path);
+                    inicio::recordar(&path);
+                }
                 self.saved = s.clone();
                 self.now = s;
                 self.say(Nivel::Ok, format!("Guardado en {}", path.display()));
@@ -752,9 +793,12 @@ impl App {
     }
 
     fn open(&mut self) {
-        if !self.discard_ok() {
-            return;
+        if self.discard_ok() {
+            self.open_file();
         }
+    }
+
+    fn open_file(&mut self) {
         if let Some(f) = rfd::FileDialog::new().add_filter("Proyecto NicoStation", &["json"]).pick_file() {
             match load(&f) {
                 Ok(p) => self.set_project(p, Some(f)),
@@ -772,6 +816,7 @@ impl App {
             Ok(e) if e.exists() => match Command::new(&e).arg(self.path.as_ref().unwrap()).spawn() {
                 Ok(c) => {
                     self.kids.push(c);
+                    self.mis.probado(self.t);
                     (Nivel::Ok, "Ejecutando el juego…".into())
                 }
                 Err(err) => (Nivel::Error, format!("No se pudo ejecutar {}: {err}", e.display())),
@@ -1005,8 +1050,8 @@ impl App {
             self.grande = g;
         }
         ui.separator();
-        if ui.button(it(ic::FILE_PLUS, "Nuevo")).clicked() && self.discard_ok() {
-            self.set_project(new_project(), None);
+        if ui.button(it(ic::FILE_PLUS, "Nuevo…")).clicked() && self.discard_ok() {
+            self.inicio = Some(inicio::Inicio::new(true));
         }
         if ui.button(it(ic::FOLDER_OPEN, "Abrir…")).clicked() {
             self.open();
@@ -1066,6 +1111,11 @@ impl App {
                     }
                 } else if ui.button(it(ic::FLOPPY, "Guardar")).on_hover_text("Ctrl+S").clicked() {
                     self.save(false);
+                }
+                ui.add_space(2.);
+                // Con la etiqueta «Misiones» solo si sobra lugar (si no, ícono con insignia).
+                if self.mis.boton(ui, &self.p, full.width() < 1480.).clicked() {
+                    self.mis.abierto = !self.mis.abierto;
                 }
                 ui.add_space(4.);
                 if ib_on(ui, self.hist.can_redo(&self.now), ic::REDO, "Rehacer (Ctrl+Shift+Z)").clicked() {
@@ -2606,7 +2656,7 @@ impl App {
 
     fn status(&mut self, ui: &mut Ui) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if self.tab == Tab::Escena {
+            if self.tab == Tab::Escena && self.inicio.is_none() {
                 ui.spacing_mut().item_spacing.x = 16.;
                 ui.label(RichText::new(format!("{:.0} %", self.zoom * 100.)).monospace().color(TEXT_MUTED)).on_hover_text("Zoom");
                 let c = self.cursor_w.map_or("x -    y -".into(), |p| format!("x {:<5.0}y {:<5.0}", p.x, p.y));
@@ -2836,6 +2886,30 @@ impl App {
 
     /// Vista inicial pedida con `--abrir` (para probar la interfaz).
     fn abrir(&mut self, que: &str) {
+        match que {
+            "bienvenida" | "nuevo-plantilla" => {
+                let ini = self.inicio.get_or_insert_with(|| inicio::Inicio::new(false));
+                if que == "nuevo-plantilla" {
+                    ini.elegir(0);
+                }
+                return;
+            }
+            "misiones" | "mision-activa" | "mision-cumplida" => {
+                self.tab = Tab::Escena;
+                self.mis.abierto = true;
+                if que != "misiones" {
+                    self.mis.empezar_primera(&self.p);
+                    self.mis.listo(0.);
+                }
+                if que == "mision-cumplida" {
+                    for _ in 0..8 {
+                        self.mis.listo(0.);
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
         let t = Target::Scene(self.sc);
         let at = |cond| eventos::Open { ev: vec![0], cond, ip: vec![], new: true };
         let bloque = |app: &App, op: &str| {
@@ -2881,6 +2955,48 @@ impl App {
                 self.nuevo_mapa();
             }
             _ => {}
+        }
+    }
+}
+
+impl App {
+    /// Pantalla de bienvenida a toda la ventana (sin proyecto, o con Archivo > Nuevo).
+    fn bienvenida(&mut self, ui: &mut Ui) {
+        egui::Panel::bottom("estado").exact_size(28.).frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(12, 0))).show(ui, |ui| self.status(ui));
+        let Some(mut ini) = self.inicio.take() else { return };
+        let mut a = None;
+        egui::CentralPanel::default_margins().frame(Frame::new().fill(BG).inner_margin(16)).show(ui, |ui| a = ini.ui(ui));
+        self.inicio = Some(ini);
+        match a {
+            None => {}
+            Some(inicio::Accion::Volver) => self.inicio = None,
+            Some(inicio::Accion::Vacio) => {
+                self.set_project(new_project(), None);
+                self.say(Nivel::Ok, "Juego nuevo y vacío. ¡A inventar!");
+            }
+            Some(inicio::Accion::Abrir) => self.open_file(),
+            Some(inicio::Accion::Reciente(f)) => match load(&f) {
+                Ok(p) => self.set_project(p, Some(f)),
+                Err(e) => self.say(Nivel::Error, format!("No se pudo abrir {}: {e}", f.display())),
+            },
+            Some(inicio::Accion::Creado(f)) => match load(&f) {
+                Ok(p) => {
+                    let name = p.name.clone();
+                    self.set_project(p, Some(f.clone()));
+                    if !self.facil {
+                        self.set_facil(true);
+                    }
+                    self.tab = Tab::Escena;
+                    self.mis.abierto = true;
+                    self.say(Nivel::Ok, format!("¡Listo! Tu juego «{name}» está en {}", f.parent().unwrap_or(&f).display()));
+                }
+                Err(e) => self.say(Nivel::Error, format!("No se pudo abrir el juego nuevo: {e}")),
+            },
+        }
+        let title = "NicoStation".to_string();
+        if title != self.title {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
         }
     }
 }
@@ -2931,6 +3047,10 @@ impl eframe::App for App {
             tema::tamanos(&ctx, self.facil);
             ctx.set_zoom_factor(if self.grande { 1.25 } else { 1. });
             self.aplicado = Some((self.facil, self.grande));
+        }
+        self.t = ctx.input(|i| i.time);
+        if self.inicio.is_some() {
+            return self.bienvenida(ui);
         }
 
         // Atajos
@@ -2999,6 +3119,9 @@ impl eframe::App for App {
         let side = Frame::new().fill(PANEL).inner_margin(12);
         egui::Panel::top("barra").exact_size(44.).frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(8, 0))).show(ui, |ui| self.top_bar(ui));
         egui::Panel::bottom("estado").exact_size(28.).frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(12, 0))).show(ui, |ui| self.status(ui));
+        if self.mis.abierto {
+            egui::Panel::right("misiones").exact_size(misiones::ANCHO).frame(side).show(ui, |ui| self.mis.ui(ui, &self.p));
+        }
         // En Mis bloques (modo fácil) el panel de la escena no se usa: más lugar para el bloque.
         if !(self.facil && self.tab == Tab::Funciones) {
             egui::Panel::left("izq").default_size(290.).size_range(240.0..=480.).frame(side)
@@ -3061,6 +3184,11 @@ impl eframe::App for App {
             self.probs = nicostation::validate::validate(&self.p, Some(&self.base_dir()));
             self.probs_de = now.clone();
         }
+        // Misiones: los pasos automáticos se revisan solo cuando cambió el proyecto (también al deshacer).
+        if now != self.mis_json {
+            self.mis.actualizar(&self.p, self.t);
+            self.mis_json = now.clone();
+        }
         self.now = now;
 
         let file = self.path.as_ref().and_then(|p| p.file_name()).map_or("sin título".into(), |f| f.to_string_lossy().to_string());
@@ -3082,7 +3210,7 @@ fn main() -> eframe::Result {
         }
     }
     let mut app = App::new();
-    let (mut abrir, mut escena, mut file) = (None, None, None);
+    let (mut abrir, mut escena, mut file, mut captura, mut tecla) = (None, None, None, None, None);
     let mut it_ = args.iter();
     while let Some(a) = it_.next() {
         match a.as_str() {
@@ -3090,6 +3218,8 @@ fn main() -> eframe::Result {
             "--grande" => app.grande = true,
             "--abrir" => abrir = it_.next().cloned(),
             "--escena" => escena = it_.next().cloned(),
+            "--captura" => captura = it_.next().cloned(),
+            "--tecla" => tecla = it_.next().and_then(|k| Key::from_name(k)),
             _ => file = Some(a.clone()),
         }
     }
@@ -3107,8 +3237,20 @@ fn main() -> eframe::Result {
     if let Some(e) = escena {
         app.sc = app.p.scenes.iter().position(|s| s.name == e).unwrap_or(0);
     }
+    if file.is_none() && abrir.as_deref().is_none_or(|a| a == "bienvenida" || a == "nuevo-plantilla") {
+        app.inicio = Some(inicio::Inicio::new(false));
+    }
     if let Some(a) = abrir {
         app.abrir(&a);
+    }
+    if let Some(out) = captura {
+        let ctx = egui::Context::default();
+        tema::aplicar(&ctx);
+        if let Err(e) = captura::capturar(&mut app, &ctx, tecla, Path::new(&out)) {
+            eprintln!("No se pudo capturar: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
     }
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1360., 820.]).with_min_inner_size([960., 600.]).with_title("NicoStation"),

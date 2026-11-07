@@ -183,7 +183,7 @@ pub const MISIONES: &[Mision] = &[
                    listo: Some(|p, ini| objects(p).count() > objects(ini).count()) },
             Paso { texto: "Agrégalo al grupo «Fruta» para que la canasta lo atrape.", pista: "En la lista de la izquierda, sección Grupos.",
                    listo: Some(|p, _| p.scenes.iter().any(|s| s.groups.get("Fruta").is_some_and(|g| g.len() > 2))) },
-            Paso { texto: "Copia el evento «Cada 3.1 segundos: crear Banana» y cambia Banana por tu fruta.", pista: "En el menú ⋮ del evento está «Duplicar».",
+            Paso { texto: "Copia el evento «Cada 3.1 segundos: crear Banana» y cambia Banana por tu fruta.", pista: "En el menú de tres puntos del evento está «Duplicar».",
                    listo: Some(|p, _| all_events(p).iter().flat_map(|e| &e.acts).filter(|a| a.op == "create").count() >= 3) },
             PROBAR,
         ],
