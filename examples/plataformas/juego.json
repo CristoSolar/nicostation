@@ -1,0 +1,833 @@
+{
+  "name": "Saltarín",
+  "width": 800.0,
+  "height": 600.0,
+  "first_scene": "Menu",
+  "globals": {
+    "record": 1.0
+  },
+  "objects": [],
+  "scenes": [
+    {
+      "name": "Menu",
+      "background": [
+        25,
+        30,
+        55
+      ],
+      "layers": [
+        {
+          "name": "",
+          "visible": true,
+          "fixed": false
+        }
+      ],
+      "objects": [
+        {
+          "name": "Titulo",
+          "type": "text",
+          "text": "SALTARÍN",
+          "size": 72.0,
+          "color": [
+            255,
+            210,
+            60
+          ]
+        },
+        {
+          "name": "Info",
+          "type": "text",
+          "text": "Enter para jugar  ·  Récord: {record}",
+          "size": 28.0,
+          "color": [
+            255,
+            255,
+            255
+          ]
+        }
+      ],
+      "groups": {},
+      "instances": [
+        {
+          "obj": "Titulo",
+          "x": 240.0,
+          "y": 200.0
+        },
+        {
+          "obj": "Info",
+          "x": 210.0,
+          "y": 330.0
+        }
+      ],
+      "vars": {},
+      "events": [
+        {
+          "conds": [
+            {
+              "op": "key_pressed",
+              "args": [
+                "Enter"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "change_scene",
+              "args": [
+                "iNivel 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "iNivel 1",
+      "background": [
+        132,
+        174,
+        255
+      ],
+      "layers": [
+        {
+          "name": "",
+          "visible": true,
+          "fixed": false
+        },
+        {
+          "name": "Guia",
+          "visible": false,
+          "fixed": false
+        },
+        {
+          "name": "HUD",
+          "visible": true,
+          "fixed": true
+        }
+      ],
+      "objects": [
+        {
+          "name": "Heroe",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "quieto",
+              "frames": [
+                "img/heroe_quieto.png"
+              ],
+              "fps": 10.0,
+              "looping": true
+            },
+            {
+              "name": "corre",
+              "frames": [
+                "img/heroe_corre1.png",
+                "img/heroe_corre2.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            },
+            {
+              "name": "salta",
+              "frames": [
+                "img/heroe_salta.png"
+              ],
+              "fps": 10.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "platformer",
+              "max_speed": 280.0,
+              "acceleration": 1500.0,
+              "deceleration": 1500.0,
+              "gravity": 1000.0,
+              "max_falling_speed": 700.0,
+              "jump_speed": 620.0,
+              "jump_sustain_time": 0.2,
+              "ladder_speed": 150.0,
+              "slope_max_angle": 60.0,
+              "can_grab_platforms": false,
+              "can_go_down_from_jumpthru": true
+            }
+          ]
+        },
+        {
+          "name": "Suelo",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/suelo.png"
+              ],
+              "fps": 10.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "platform",
+              "jumpthru": false,
+              "ladder": false,
+              "grabbable": false
+            }
+          ]
+        },
+        {
+          "name": "Puente",
+          "type": "sprite",
+          "w": 128.0,
+          "h": 16.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/suelo.png"
+              ],
+              "fps": 10.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "platform",
+              "jumpthru": true,
+              "ladder": false,
+              "grabbable": false
+            }
+          ]
+        },
+        {
+          "name": "Rampa",
+          "type": "sprite",
+          "w": 200.0,
+          "h": 20.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/suelo.png"
+              ],
+              "fps": 10.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "platform",
+              "jumpthru": false,
+              "ladder": false,
+              "grabbable": false
+            }
+          ]
+        },
+        {
+          "name": "Escalera",
+          "type": "box",
+          "w": 24.0,
+          "h": 170.0,
+          "color": [
+            150,
+            105,
+            60
+          ],
+          "behaviors": [
+            {
+              "type": "platform",
+              "jumpthru": false,
+              "ladder": true,
+              "grabbable": false
+            }
+          ]
+        },
+        {
+          "name": "Moneda",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "gira",
+              "frames": [
+                "img/moneda0.png",
+                "img/moneda1.png",
+                "img/moneda2.png",
+                "img/moneda1.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ]
+        },
+        {
+          "name": "Enemigo",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/enemigo.png"
+              ],
+              "fps": 10.0,
+              "looping": true
+            }
+          ],
+          "vars": {
+            "dir": 1.0
+          }
+        },
+        {
+          "name": "Pared",
+          "type": "box",
+          "w": 16.0,
+          "h": 64.0,
+          "color": [
+            255,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "Marcador",
+          "type": "text",
+          "text": "Puntos: {puntos}   Monedas: {count(Moneda)}   Récord: {record}",
+          "size": 26.0,
+          "color": [
+            255,
+            255,
+            255
+          ]
+        },
+        {
+          "name": "Sprite",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "quieto",
+              "frames": [],
+              "fps": 10.0,
+              "looping": true
+            }
+          ]
+        },
+        {
+          "name": "Sprite2",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "quieto",
+              "frames": [],
+              "fps": 10.0,
+              "looping": true
+            }
+          ]
+        }
+      ],
+      "groups": {},
+      "instances": [
+        {
+          "obj": "Heroe",
+          "x": 80.0,
+          "y": 480.0
+        },
+        {
+          "obj": "Suelo",
+          "x": 0.0,
+          "y": 568.0,
+          "w": 900.0,
+          "h": 32.0
+        },
+        {
+          "obj": "Suelo",
+          "x": 1000.0,
+          "y": 568.0,
+          "w": 1000.0,
+          "h": 32.0
+        },
+        {
+          "obj": "Suelo",
+          "x": 1960.0,
+          "y": 0.0,
+          "w": 40.0,
+          "h": 568.0
+        },
+        {
+          "obj": "Puente",
+          "x": 300.0,
+          "y": 460.0
+        },
+        {
+          "obj": "Puente",
+          "x": 520.0,
+          "y": 370.0
+        },
+        {
+          "obj": "Puente",
+          "x": 900.0,
+          "y": 450.0
+        },
+        {
+          "obj": "Puente",
+          "x": 1300.0,
+          "y": 400.0
+        },
+        {
+          "obj": "Rampa",
+          "x": 1150.0,
+          "y": 533.0,
+          "angle": -20.0
+        },
+        {
+          "obj": "Escalera",
+          "x": 1440.0,
+          "y": 398.0,
+          "z": -1.0
+        },
+        {
+          "obj": "Moneda",
+          "x": 356.0,
+          "y": 420.0
+        },
+        {
+          "obj": "Moneda",
+          "x": 576.0,
+          "y": 330.0
+        },
+        {
+          "obj": "Moneda",
+          "x": 956.0,
+          "y": 410.0
+        },
+        {
+          "obj": "Moneda",
+          "x": 1356.0,
+          "y": 360.0
+        },
+        {
+          "obj": "Moneda",
+          "x": 1700.0,
+          "y": 520.0
+        },
+        {
+          "obj": "Enemigo",
+          "x": 650.0,
+          "y": 544.0
+        },
+        {
+          "obj": "Enemigo",
+          "x": 1500.0,
+          "y": 544.0
+        },
+        {
+          "obj": "Pared",
+          "x": 420.0,
+          "y": 504.0,
+          "layer": "Guia"
+        },
+        {
+          "obj": "Pared",
+          "x": 880.0,
+          "y": 504.0,
+          "layer": "Guia"
+        },
+        {
+          "obj": "Pared",
+          "x": 1100.0,
+          "y": 504.0,
+          "layer": "Guia"
+        },
+        {
+          "obj": "Pared",
+          "x": 1900.0,
+          "y": 504.0,
+          "layer": "Guia"
+        },
+        {
+          "obj": "Marcador",
+          "x": 16.0,
+          "y": 12.0,
+          "layer": "HUD"
+        }
+      ],
+      "vars": {
+        "puntos": 35.0
+      },
+      "events": [
+        {
+          "kind": "comment",
+          "text": "Animaciones del héroe según su movimiento."
+        },
+        {
+          "conds": [
+            {
+              "op": "key_down",
+              "args": [
+                "Left"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "flip_x",
+              "args": [
+                "Heroe",
+                "1"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "key_down",
+              "args": [
+                "Right"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "flip_x",
+              "args": [
+                "Heroe",
+                "0"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "on_floor",
+              "args": [
+                "Heroe"
+              ]
+            }
+          ],
+          "sub": [
+            {
+              "conds": [
+                {
+                  "op": "is_moving",
+                  "args": [
+                    "Heroe"
+                  ]
+                }
+              ],
+              "acts": [
+                {
+                  "op": "set_animation",
+                  "args": [
+                    "Heroe",
+                    "corre"
+                  ]
+                }
+              ]
+            },
+            {
+              "conds": [
+                {
+                  "op": "is_moving",
+                  "args": [
+                    "Heroe"
+                  ],
+                  "not": true
+                }
+              ],
+              "acts": [
+                {
+                  "op": "set_animation",
+                  "args": [
+                    "Heroe",
+                    "quieto"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "on_floor",
+              "args": [
+                "Heroe"
+              ],
+              "not": true
+            }
+          ],
+          "acts": [
+            {
+              "op": "set_animation",
+              "args": [
+                "Heroe",
+                "salta"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "jumping",
+              "args": [
+                "Heroe"
+              ]
+            },
+            {
+              "op": "trigger_once"
+            }
+          ],
+          "acts": [
+            {
+              "op": "play_sound",
+              "args": [
+                "snd/salto.wav",
+                "50"
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "group",
+          "text": "Monedas y enemigos",
+          "sub": [
+            {
+              "conds": [
+                {
+                  "op": "collides",
+                  "args": [
+                    "Heroe",
+                    "Moneda"
+                  ]
+                }
+              ],
+              "acts": [
+                {
+                  "op": "delete",
+                  "args": [
+                    "Moneda"
+                  ]
+                },
+                {
+                  "op": "call",
+                  "args": [
+                    "ganar_puntos",
+                    "1"
+                  ]
+                }
+              ]
+            },
+            {
+              "acts": [
+                {
+                  "op": "add",
+                  "args": [
+                    "Enemigo",
+                    "x",
+                    "Enemigo.dir * 80 * dt"
+                  ]
+                }
+              ]
+            },
+            {
+              "conds": [
+                {
+                  "op": "collides",
+                  "args": [
+                    "Enemigo",
+                    "Pared"
+                  ]
+                }
+              ],
+              "acts": [
+                {
+                  "op": "separate",
+                  "args": [
+                    "Enemigo",
+                    "Pared"
+                  ]
+                },
+                {
+                  "op": "set",
+                  "args": [
+                    "Enemigo",
+                    "dir",
+                    "0 - Enemigo.dir"
+                  ]
+                }
+              ]
+            },
+            {
+              "conds": [
+                {
+                  "op": "collides",
+                  "args": [
+                    "Heroe",
+                    "Enemigo"
+                  ]
+                }
+              ],
+              "sub": [
+                {
+                  "conds": [
+                    {
+                      "op": "falling",
+                      "args": [
+                        "Heroe"
+                      ]
+                    }
+                  ],
+                  "acts": [
+                    {
+                      "op": "delete",
+                      "args": [
+                        "Enemigo"
+                      ]
+                    },
+                    {
+                      "op": "jump",
+                      "args": [
+                        "Heroe"
+                      ]
+                    },
+                    {
+                      "op": "play_sound",
+                      "args": [
+                        "snd/golpe.wav",
+                        "80"
+                      ]
+                    },
+                    {
+                      "op": "call",
+                      "args": [
+                        "ganar_puntos",
+                        "5"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "conds": [
+                    {
+                      "op": "falling",
+                      "args": [
+                        "Heroe"
+                      ],
+                      "not": true
+                    }
+                  ],
+                  "acts": [
+                    {
+                      "op": "restart_scene"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "acts": [
+            {
+              "op": "camera",
+              "args": [
+                "clamp(Heroe.cx, 400, 1600)",
+                "300"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "compare_prop",
+              "args": [
+                "Heroe",
+                "y",
+                ">",
+                "700"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "restart_scene"
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "compare",
+              "args": [
+                "count(Moneda)",
+                "=",
+                "0"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "set_global",
+              "args": [
+                "record",
+                "max(record, puntos)"
+              ]
+            },
+            {
+              "op": "change_scene",
+              "args": [
+                "Menu"
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "comment"
+        }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "name": "ganar_puntos",
+      "is_condition": false,
+      "params": [
+        "n"
+      ],
+      "events": [
+        {
+          "acts": [
+            {
+              "op": "add_var",
+              "args": [
+                "puntos",
+                "n"
+              ]
+            },
+            {
+              "op": "play_sound",
+              "args": [
+                "snd/moneda.wav",
+                "70"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

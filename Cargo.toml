@@ -1,0 +1,34 @@
+[package]
+name = "nicostation"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nicostation"
+path = "src/bin/nicostation.rs"
+
+[[bin]]
+name = "nicostation-editor"
+path = "src/bin/nicostation-editor.rs"
+
+[[bin]]
+name = "nicostation-mcp"
+path = "src/bin/nicostation-mcp.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+macroquad = "0.4"
+
+# Solo el editor (escritorio); el reproductor también compila a WebAssembly.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe = "0.37"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rfd = "0.15"
+
+[profile.dev.package."*"]
+opt-level = 2

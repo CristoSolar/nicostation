@@ -1,0 +1,45 @@
+{
+  "name": "Recolector",
+  "width": 800,
+  "height": 600,
+  "first_scene": "Juego",
+  "scenes": [
+    {
+      "name": "Juego",
+      "background": [20, 24, 36],
+      "layers": [{ "name": "" }, { "name": "HUD", "fixed": true }],
+      "vars": { "score": 0 },
+      "objects": [
+        { "name": "Player", "type": "box", "w": 28, "h": 28, "color": [80, 200, 255],
+          "behaviors": [{ "type": "top_down", "max_speed": 260 }, { "type": "bound_to_layout" }] },
+        { "name": "Coin", "type": "box", "w": 14, "h": 14, "color": [255, 210, 60], "behaviors": [{ "type": "rotate", "speed": 180 }] },
+        { "name": "Enemy", "type": "box", "w": 20, "h": 20, "color": [240, 70, 90],
+          "behaviors": [{ "type": "bullet", "speed": 180 }, { "type": "destroy_outside" }] },
+        { "name": "Hud", "type": "text", "text": "Puntos: {score}   Monedas: {count(Coin)}", "size": 28 }
+      ],
+      "instances": [
+        { "obj": "Player", "x": 386, "y": 286 },
+        { "obj": "Hud", "x": 12, "y": 8, "layer": "HUD" }
+      ],
+      "events": [
+        { "conds": [{ "op": "every", "args": ["1.2"] }, { "op": "compare", "args": ["count(Coin)", "<", "5"] }],
+          "acts": [{ "op": "create", "args": ["Coin", "random(20, 780)", "random(50, 580)", ""] }] },
+        { "conds": [{ "op": "collides", "args": ["Player", "Coin"] }],
+          "acts": [{ "op": "delete", "args": ["Coin"] }, { "op": "add_var", "args": ["score", "1"] }] },
+        { "conds": [{ "op": "every", "args": ["1.5"] }],
+          "acts": [
+            { "op": "create", "args": ["Enemy", "0", "random(40, 580)", ""] },
+            { "op": "look_at", "args": ["Enemy", "Player.cx", "Player.cy"] }
+          ],
+          "sub": [
+            { "conds": [{ "op": "compare", "args": ["score", ">=", "10"] }],
+              "acts": [
+                { "op": "create", "args": ["Enemy", "800", "random(40, 580)", ""] },
+                { "op": "look_at", "args": ["Enemy", "Player.cx", "Player.cy"] }
+              ] }
+          ] },
+        { "conds": [{ "op": "collides", "args": ["Player", "Enemy"] }], "acts": [{ "op": "restart_scene" }] }
+      ]
+    }
+  ]
+}
