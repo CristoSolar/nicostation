@@ -9,7 +9,13 @@
 //! `--escena <nombre>` elige la escena · `--abrir <qué>` abre una vista al iniciar:
 //! `eventos`, `cajitas`, `bloques`, `asistente`, `recetas`, `receta` (Disparar, con sus preguntas),
 //! `selector` (¿CUÁNDO pasa?), `selector-acciones`, `tecla` (bloque con teclado), `objeto` (bloque con objetos),
-//! `ficha` (abre la ventanita de la primera ficha de objeto), `arreglar` (muestra el primer problema).
+//! `ficha` (abre la ventanita de la primera ficha de objeto), `arreglar` (muestra el primer problema),
+//! `mapa` (elige el primer mapa de baldosas de la escena, o crea uno con las baldosas de ejemplo, y pinta un paisaje de prueba),
+//! `mapa-nuevo` (como «+ Mapa»: pregunta qué baldosas usar), `sprite-nuevo` (como «+ Sprite»: dibujar o elegir imágenes),
+//! `dibujo` (editor de dibujo con una animación de prueba de 3 cuadros), `cebolla` (lo mismo, en el cuadro 2 con piel de cebolla),
+//! `baldosas` (editor de dibujo con la imagen de baldosas del mapa y su rejilla),
+//! `dibujo-guardado` (dibuja la animación de prueba y la guarda en `img/` como si se apretara «Guardar dibujo»).
+//! Las opciones que crean imágenes necesitan un proyecto con archivo (escriben en su carpeta `img/`).
 
 #[path = "../editor/bloques.rs"]
 mod bloques;
@@ -27,6 +33,10 @@ mod historial;
 mod iconos;
 #[path = "../editor/tema.rs"]
 mod tema;
+#[path = "../editor/mapa.rs"]
+mod mapa;
+#[path = "../editor/dibujo.rs"]
+mod dibujo;
 
 use eframe::egui::{
     self, Align, Align2, AtomExt, Button, Color32, DragValue, Frame, Key, Layout, Margin, Modifiers, PointerButton, Pos2, Rect,
@@ -129,6 +139,25 @@ struct App {
     files_at: Option<std::time::Instant>,
     /// Ancho izquierdo y derecho ocupados en la barra superior (para no tapar las pestañas).
     bar_lr: (f32, f32),
+    // ---- mapas y dibujo ----
+    pintor: mapa::Pintor,
+    dib: Option<dibujo::Dibujo>,
+    /// Objeto recién creado que espera una elección (dibujar, elegir imágenes, baldosas).
+    nuevo: Option<Nuevo>,
+}
+
+/// Pregunta que sigue a «+ Sprite» y «+ Mapa».
+enum Nuevo {
+    Sprite(String),
+    Mapa(String),
+}
+
+/// Pedidos del panel de propiedades que necesitan al editor.
+enum PropAct {
+    /// Abrir el editor de dibujo en la animación `n`.
+    Dibujar(usize),
+    DibujarBaldosas,
+    CrearBaldosas,
 }
 
 fn new_scene(name: &str) -> Scene {
@@ -407,8 +436,72 @@ fn new_behavior(t: &str) -> Option<Behavior> {
     serde_json::from_value(json!({ "type": t })).or_else(|_| serde_json::from_value(json!({ "type": t, "speed": 100.0 }))).ok()
 }
 
+/// Propiedades de un mapa de baldosas.
+fn tilemap_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, files: &[String], tex: Option<&egui::TextureHandle>, kid: bool) -> Option<PropAct> {
+    let Kind::Tilemap { tileset, tile, cols, rows, data, pass } = &mut o.kind else { return None };
+    let mut act = None;
+    if kid {
+        ui.label(RichText::new(mapa::TEXTO_NINOS).color(TEXT_SOFT));
+        ui.add_space(4.);
+    }
+    grid("mapprops").show(ui, |ui| {
+        lbl(ui, "Baldosas");
+        let imgs: Vec<&String> = files.iter().filter(|f| [".png", ".jpg", ".jpeg"].iter().any(|x| f.to_lowercase().ends_with(x))).collect();
+        let shown = if tileset.is_empty() { "(sin imagen)".to_string() } else { tileset.clone() };
+        egui::ComboBox::from_id_salt("tileset").selected_text(shown).width(160.).show_ui(ui, |ui| {
+            for f in imgs {
+                if ui.selectable_label(tileset == f, f.as_str()).clicked() {
+                    *tileset = f.clone();
+                }
+            }
+            ui.separator();
+            if ui.button(it(ic::FOLDER_OPEN, "Elegir archivo…")).clicked() {
+                if let Some(f) = rfd::FileDialog::new().add_filter("Imagen", &["png", "jpg", "jpeg"]).set_directory(base).pick_file() {
+                    *tileset = rel(base, &f);
+                }
+            }
+            if ui.button(it(ic::SPARKLE, "Crear baldosas de ejemplo")).clicked() {
+                act = Some(PropAct::CrearBaldosas);
+            }
+        });
+        ui.end_row();
+        lbl(ui, "Baldosa");
+        ui.add(DragValue::new(tile).range(4..=256).suffix(" px")).on_hover_text("Tamaño de cada baldosa (cuadrada)");
+        ui.end_row();
+        let (mut c, mut r) = (*cols, *rows);
+        lbl(ui, "Columnas");
+        let ch_c = ui.add(DragValue::new(&mut c).range(1..=1000)).changed();
+        ui.end_row();
+        lbl(ui, "Filas");
+        let ch_r = ui.add(DragValue::new(&mut r).range(1..=1000)).changed();
+        ui.end_row();
+        if ch_c || ch_r {
+            *data = mapa::redimensionar(data, *cols, *rows, c, r);
+            (*cols, *rows) = (c, r);
+        }
+    });
+    let n = mapa::cantidad(tex, *tile);
+    let info = match tex {
+        Some(t) => format!("{n} baldosas en la imagen ({}×{} px) · {} de decoración", t.size()[0], t.size()[1], pass.len()),
+        None if tileset.is_empty() => "Sin imagen: se ven cuadrados de colores.".into(),
+        None => format!("No se encontró «{tileset}»: se ven cuadrados de colores."),
+    };
+    ui.label(muted(info));
+    ui.horizontal_wrapped(|ui| {
+        if ui.button(it(ic::PALETTE, "Dibujar baldosas")).on_hover_text("Abre el editor de dibujo con la imagen de baldosas").clicked() {
+            act = Some(PropAct::DibujarBaldosas);
+        }
+        if tileset.is_empty() && ui.button(it(ic::SPARKLE, "Crear baldosas de ejemplo")).clicked() {
+            act = Some(PropAct::CrearBaldosas);
+        }
+    });
+    ui.label(muted("Selecciona el mapa en el lienzo para pintarlo."));
+    act
+}
+
 /// Propiedades según el tipo de objeto, animaciones, comportamientos y variables.
-fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: Option<&HashMap<String, usize>>) {
+fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: Option<&HashMap<String, usize>>, files: &[String], tex: Option<&egui::TextureHandle>) -> Option<PropAct> {
+    let mut act = tilemap_props(ui, o, base, files, tex, kid.is_some());
     grid("objprops").show(ui, |ui| match &mut o.kind {
         Kind::Box { w, h, color } => {
             lbl(ui, "Ancho");
@@ -440,6 +533,7 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
             ui.add(DragValue::new(h).range(0..=4096)).on_hover_text("0 = tamaño de la imagen");
             ui.end_row();
         }
+        Kind::Tilemap { .. } => {}
     });
     ui.add_space(4.);
     if let Kind::Sprite { animations, .. } = &mut o.kind {
@@ -473,11 +567,18 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
                         if let Some(j) = fdel {
                             a.frames.remove(j);
                         }
-                        if ui.button(it(ic::PLUS, "Añadir imágenes…")).clicked() {
-                            if let Some(fs) = rfd::FileDialog::new().add_filter("Imagen", &["png", "jpg", "jpeg"]).set_directory(base).pick_files() {
-                                a.frames.extend(fs.iter().map(|f| rel(base, f)));
+                        ui.horizontal_wrapped(|ui| {
+                            let r = ui.add(Button::new((RichText::new(ic::PALETTE).color(ACCENT), RichText::new("Dibujar"))))
+                                .on_hover_text("Dibuja o cambia las imágenes de esta animación con el editor de pixeles");
+                            if r.clicked() {
+                                act = Some(PropAct::Dibujar(i));
                             }
-                        }
+                            if ui.button(it(ic::PLUS, "Añadir imágenes…")).clicked() {
+                                if let Some(fs) = rfd::FileDialog::new().add_filter("Imagen", &["png", "jpg", "jpeg"]).set_directory(base).pick_files() {
+                                    a.frames.extend(fs.iter().map(|f| rel(base, f)));
+                                }
+                            }
+                        });
                     });
                 });
             }
@@ -516,6 +617,7 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
         }
         None => drop(egui::CollapsingHeader::new(section("Variables del objeto", Some(o.vars.len()))).id_salt("ovars").show(ui, |ui| vars_ui(ui, "objvars", &mut o.vars, nb))),
     }
+    act
 }
 
 fn kind_icon(k: &Kind) -> &'static str {
@@ -523,6 +625,7 @@ fn kind_icon(k: &Kind) -> &'static str {
         Kind::Sprite { .. } => ic::IMAGE,
         Kind::Text { .. } => ic::TEXT_T,
         Kind::Box { .. } => ic::CUBE,
+        Kind::Tilemap { .. } => ic::MAP,
     }
 }
 
@@ -531,6 +634,7 @@ fn kind_name(k: &Kind) -> &'static str {
         Kind::Sprite { .. } => "Sprite",
         Kind::Text { .. } => "Texto",
         Kind::Box { .. } => "Caja",
+        Kind::Tilemap { .. } => "Mapa",
     }
 }
 
@@ -549,6 +653,7 @@ impl App {
             func: 0, fparams: None, nb: Default::default(), tabs_w: 440., kids: vec![],
             facil: true, grande: false, aplicado: None, sel: None, rec: None, nueva_caj: None, asis: None, fnuevo: String::new(),
             probs: vec![], probs_de: String::new(), jump: None, nota: None, files: vec![], files_at: None, bar_lr: (0., 0.),
+            pintor: mapa::Pintor::default(), dib: None, nuevo: None,
         }
     }
 
@@ -739,6 +844,7 @@ impl App {
                 t.map_or(Vec2::splat(32.), |t| t.size_vec2())
             }
             Kind::Sprite { w, h, .. } => Vec2::new(*w, *h),
+            Kind::Tilemap { tile, cols, rows, .. } => Vec2::new(*cols as f32 * tile, *rows as f32 * tile),
         }
     }
 
@@ -803,6 +909,7 @@ impl App {
                     }
                     animations.first().and_then(|a| a.frames.first()).and_then(|f| self.texture(ctx, f)).map_or(eventos::Thumb::Empty, eventos::Thumb::Tex)
                 }
+                Kind::Tilemap { tileset, .. } => self.texture(ctx, tileset).map_or(eventos::Thumb::Color([89, 192, 89]), eventos::Thumb::Tex),
             };
             l.thumbs.insert(o.name.clone(), t);
         }
@@ -1172,12 +1279,153 @@ impl App {
             ] {
                 let base = kind_name(&kind);
                 if ui.add(Button::new(it(kind_icon(&kind), base))).on_hover_text(format!("Nuevo objeto {}", base.to_lowercase())).clicked() {
-                    let n = (1..).map(|k| if k == 1 { base.to_string() } else { format!("{base}{k}") }).find(|n| !self.name_taken(n)).unwrap();
+                    let n = self.nombre_libre(base);
+                    let sprite = matches!(kind, Kind::Sprite { .. });
                     self.scene().objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![], vars: Vars::new() });
-                    self.sel_obj = Some(n);
+                    self.sel_obj = Some(n.clone());
+                    if sprite {
+                        self.nuevo = Some(Nuevo::Sprite(n));
+                    }
                 }
             }
+            if ui.add(Button::new(it(ic::MAP, "Mapa"))).on_hover_text(mapa::TEXTO_NINOS).clicked() {
+                self.nuevo_mapa();
+            }
         });
+    }
+
+    fn nombre_libre(&self, base: &str) -> String {
+        (1..).map(|k| if k == 1 { base.to_string() } else { format!("{base}{k}") }).find(|n| !self.name_taken(n)).unwrap()
+    }
+
+    /// «+ Mapa»: objeto mapa de baldosas del tamaño del juego (el doble de ancho), con una instancia en (0, 0) que es plataforma.
+    fn nuevo_mapa(&mut self) {
+        self.snap_hist();
+        let n = self.nombre_libre("Mapa");
+        let tile = 32.;
+        let cols = (self.p.width / tile).ceil() as usize * 2;
+        let rows = (self.p.height / tile).ceil() as usize;
+        let kind = Kind::Tilemap { tileset: String::new(), tile, cols, rows, data: vec![], pass: vec![] };
+        let platform = Behavior::Platform { jumpthru: false, ladder: false, grabbable: false };
+        let s = self.scene();
+        s.objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![platform], vars: Vars::new() });
+        s.instances.push(Instance { obj: n.clone(), x: 0., y: 0., layer: String::new(), angle: 0., z: 0., w: None, h: None, vars: Vars::new() });
+        self.sel_inst = Some(s.instances.len() - 1);
+        self.sel_obj = Some(n.clone());
+        self.pintor = mapa::Pintor::default();
+        self.nuevo = Some(Nuevo::Mapa(n));
+        self.say(Nivel::Ok, "Mapa nuevo: elige sus baldosas y píntalo en el lienzo");
+    }
+
+    /// Crea (si hace falta) las baldosas de ejemplo y se las pone al mapa `obj`.
+    fn usar_baldosas_ejemplo(&mut self, obj: &str) {
+        if !self.carpeta_ok() {
+            return;
+        }
+        match mapa::crear_ejemplo(&self.base_dir()) {
+            Ok(f) => {
+                self.tex.remove(&f);
+                self.files_at = None;
+                if let Some(Kind::Tilemap { tileset, tile, pass, .. }) = self.obj_mut(obj).map(|o| &mut o.kind) {
+                    *tileset = f.clone();
+                    *tile = 32.;
+                    if pass.is_empty() {
+                        *pass = mapa::EJEMPLO_PASS.to_vec();
+                    }
+                }
+                self.say(Nivel::Ok, format!("Baldosas de ejemplo listas en {f}: pasto, tierra, piedra, ladrillo, madera, agua, nube y hojas"));
+            }
+            Err(e) => self.say(Nivel::Error, format!("No se pudieron crear las baldosas: {e}")),
+        }
+    }
+
+    /// Las imágenes nuevas se guardan junto al proyecto: hace falta que esté guardado.
+    fn carpeta_ok(&mut self) -> bool {
+        if self.path.is_some() {
+            return true;
+        }
+        self.say(Nivel::Warn, "Primero guarda el proyecto (Ctrl+S): las imágenes se guardan en su carpeta.");
+        false
+    }
+
+    /// Abre el editor de dibujo para una animación o para la imagen de baldosas de un mapa.
+    fn abrir_dibujo(&mut self, destino: dibujo::Destino) {
+        if !self.carpeta_ok() {
+            return;
+        }
+        let base = self.base_dir();
+        let (obj, rutas, fps, titulo, rejilla, nuevo_wh) = match &destino {
+            dibujo::Destino::Anim { obj, anim } => {
+                let Some(Kind::Sprite { animations, w, h }) = self.obj_mut(obj).map(|o| o.kind.clone()) else { return };
+                let Some(a) = animations.get(*anim) else { return };
+                let wh = if w > 0. && h > 0. && w <= 256. && h <= 256. { (w as usize, h as usize) } else { (32, 32) };
+                (obj.clone(), a.frames.clone(), a.fps, format!("{obj} · animación «{}»", a.name), None, wh)
+            }
+            dibujo::Destino::Baldosas { obj } => {
+                let Some(Kind::Tilemap { tileset, tile, .. }) = self.obj_mut(obj).map(|o| o.kind.clone()) else { return };
+                let t = (tile as usize).clamp(4, 256);
+                let rutas = if tileset.is_empty() { vec![] } else { vec![tileset] };
+                (obj.clone(), rutas, 10., format!("{obj} · baldosas"), Some(t), ((t * 4).min(256), (t * 2).min(256)))
+            }
+        };
+        let (w, h, cuadros) = if rutas.is_empty() {
+            (nuevo_wh.0, nuevo_wh.1, vec![])
+        } else {
+            match dibujo::cargar(&base, &rutas) {
+                Ok(x) => x,
+                Err(e) => return self.say(Nivel::Error, e),
+            }
+        };
+        let mut d = dibujo::Dibujo::new(destino, titulo, w, h, cuadros, fps);
+        d.rejilla = rejilla;
+        self.dib = Some(d);
+        self.say(Nivel::Info, format!("Dibujando «{obj}»"));
+    }
+
+    /// Guarda el dibujo en PNG y actualiza el objeto (un solo paso de deshacer).
+    fn guardar_dibujo(&mut self, d: &mut dibujo::Dibujo) -> bool {
+        let base = self.base_dir();
+        let prefijo = match &d.destino {
+            dibujo::Destino::Anim { obj, anim } => {
+                let an = match self.obj_mut(obj).map(|o| &o.kind) {
+                    Some(Kind::Sprite { animations, .. }) => animations.get(*anim).map(|a| a.name.clone()).unwrap_or_default(),
+                    _ => String::new(),
+                };
+                format!("{}_{}", dibujo::limpio(obj), dibujo::limpio(&an))
+            }
+            dibujo::Destino::Baldosas { obj } => format!("{}_baldosas", dibujo::limpio(obj)),
+        };
+        let rutas = match d.guardar(&base, &prefijo) {
+            Ok(r) => r,
+            Err(e) => {
+                d.aviso = Some(e);
+                return false;
+            }
+        };
+        for r in &rutas {
+            self.tex.remove(r);
+        }
+        self.files_at = None;
+        self.snap_hist();
+        let fps = d.fps;
+        match d.destino.clone() {
+            dibujo::Destino::Anim { obj, anim } => {
+                if let Some(Kind::Sprite { animations, .. }) = self.obj_mut(&obj).map(|o| &mut o.kind) {
+                    if let Some(a) = animations.get_mut(anim) {
+                        a.frames = rutas.clone();
+                        a.fps = fps;
+                    }
+                }
+            }
+            dibujo::Destino::Baldosas { obj } => {
+                if let Some(Kind::Tilemap { tileset, .. }) = self.obj_mut(&obj).map(|o| &mut o.kind) {
+                    *tileset = rutas[0].clone();
+                }
+            }
+        }
+        let n = rutas.len();
+        self.say(Nivel::Ok, format!("Dibujo guardado ({n} imagen{}) · {UNDO_HINT}", if n == 1 { "" } else { "es" }));
+        true
     }
 
     fn groups_ui(&mut self, ui: &mut Ui) {
@@ -1406,10 +1654,28 @@ impl App {
                     (v, n)
                 }).collect()
             });
+            if self.files_at.is_none_or(|t| t.elapsed().as_secs() >= 5) {
+                self.files = buscar_archivos(&base);
+                self.files_at = Some(std::time::Instant::now());
+            }
+            let files = self.files.clone();
+            let ts = self.obj_mut(&name).and_then(|o| match &o.kind {
+                Kind::Tilemap { tileset, .. } => Some(tileset.clone()),
+                _ => None,
+            });
+            let ctx = ui.ctx().clone();
+            let tex = ts.and_then(|t| self.texture(&ctx, &t));
+            let mut act = None;
             if let Some(o) = self.obj_mut(&name) {
-                obj_props(ui, o, &base, &mut nb, usos.as_ref());
+                act = obj_props(ui, o, &base, &mut nb, usos.as_ref(), &files, tex.as_ref());
             }
             self.nb[3] = nb;
+            match act {
+                Some(PropAct::Dibujar(a)) => self.abrir_dibujo(dibujo::Destino::Anim { obj: name.clone(), anim: a }),
+                Some(PropAct::DibujarBaldosas) => self.abrir_dibujo(dibujo::Destino::Baldosas { obj: name.clone() }),
+                Some(PropAct::CrearBaldosas) => self.usar_baldosas_ejemplo(&name),
+                None => {}
+            }
             ui.add_space(6.);
             if ui.button(danger_it("Eliminar objeto")).on_hover_text("Elimina también sus instancias").clicked() {
                 self.snap_hist();
@@ -1433,17 +1699,185 @@ impl App {
 
     // ---- lienzo ----
 
+    /// Instancia seleccionada que es un mapa de baldosas, con el nombre del objeto.
+    fn mapa_sel(&self) -> Option<(usize, String)> {
+        let i = self.sel_valid()?;
+        let s = &self.p.scenes[self.sc];
+        let o = self.p.objects_of(s).find(|o| o.name == s.instances[i].obj)?;
+        matches!(o.kind, Kind::Tilemap { .. }).then(|| (i, o.name.clone()))
+    }
+
+    /// ¿Se está pintando un mapa en el lienzo?
+    fn pintando(&self) -> Option<(usize, String)> {
+        self.mapa_sel().filter(|_| self.pintor.on && self.tab == Tab::Escena)
+    }
+
+    /// Panel con herramientas y paleta de baldosas del mapa seleccionado.
+    fn panel_mapa(&mut self, ui: &mut Ui, name: &str) {
+        let ctx = ui.ctx().clone();
+        let Some(Kind::Tilemap { tileset, tile, .. }) = self.obj_mut(name).map(|o| o.kind.clone()) else { return };
+        let tex = self.texture(&ctx, &tileset);
+        let mut pass = match self.obj_mut(name).map(|o| &mut o.kind) {
+            Some(Kind::Tilemap { pass, .. }) => std::mem::take(pass),
+            _ => vec![],
+        };
+        let mut listo = false;
+        let frame = Frame::new().fill(PANEL).inner_margin(12);
+        egui::Panel::left("paleta_mapa").exact_size(262.).resizable(false).frame(frame).show(ui, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                header(ui, ic::MAP, "Pintar mapa", name);
+                let on = self.pintor.on;
+                ui.horizontal(|ui| {
+                    seg(ui, |ui| {
+                        if seg_btn(ui, on, it(ic::PAINT_BRUSH, "Pintar")).on_hover_text("Pintar baldosas en el lienzo").clicked() {
+                            self.pintor.on = true;
+                        }
+                        if seg_btn(ui, !on, it(ic::CURSOR, "Mover")).on_hover_text("Seleccionar y mover objetos").clicked() {
+                            self.pintor.on = false;
+                        }
+                    })
+                });
+                if self.facil {
+                    ui.add_space(2.);
+                    ui.label(RichText::new(mapa::TEXTO_NINOS).color(TEXT_SOFT));
+                }
+                ui.add_space(6.);
+                ui.label(RichText::new("Herramientas").font(sb(13.)).color(TEXT_MUTED));
+                mapa::herramientas(ui, &mut self.pintor);
+                ui.add_space(6.);
+                ui.label(RichText::new("Baldosas").font(sb(13.)).color(TEXT_MUTED));
+                if tex.is_none() {
+                    ui.label(muted(if tileset.is_empty() { "Sin imagen de baldosas: elige una en las propiedades." } else { "No se encontró la imagen de baldosas." }));
+                }
+                mapa::paleta(ui, tex.as_ref(), tile, &mut pass, &mut self.pintor.baldosa);
+                ui.add_space(8.);
+                if ui.add(Button::new(it(ic::CHECK, "Listo")).min_size(Vec2::new(ui.available_width(), 32.))).on_hover_text("Terminar de pintar (Esc)").clicked() {
+                    listo = true;
+                }
+                ui.add_space(4.);
+                ui.label(RichText::new("Clic derecho: borrar · Rueda: zoom · Botón del medio: mover la vista").small().color(TEXT_MUTED));
+            });
+        });
+        if let Some(Kind::Tilemap { pass: p, .. }) = self.obj_mut(name).map(|o| &mut o.kind) {
+            *p = pass;
+        }
+        if listo {
+            self.sel_inst = None;
+        }
+    }
+
+    /// Pintado del mapa: rejilla, vista previa bajo el cursor y trazos (un paso de deshacer por trazo).
+    fn pintar_mapa(&mut self, ui: &Ui, resp: &egui::Response, painter: &egui::Painter, ii: usize, name: &str, org: Pos2, z: f32) {
+        let ins = &self.p.scenes[self.sc].instances[ii];
+        let (pos, iw, ih) = (Vec2::new(ins.x, ins.y), ins.w, ins.h);
+        let Some(Kind::Tilemap { tileset, tile, cols, rows, .. }) = self.obj_mut(name).map(|o| o.kind.clone()) else { return };
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        let sz = Vec2::new(iw.unwrap_or(cols as f32 * tile), ih.unwrap_or(rows as f32 * tile));
+        let (o_s, cs) = (org + pos * z, Vec2::new(sz.x / cols as f32, sz.y / rows as f32) * z);
+        let tex = self.tex.get(&tileset).cloned().flatten();
+        mapa::rejilla(painter, o_s, cs, cols, rows);
+        let cell = |p: Pos2| (((p.x - o_s.x) / cs.x).floor() as i64, ((p.y - o_s.y) / cs.y).floor() as i64);
+        let dentro = |c: (i64, i64)| c.0 >= 0 && c.1 >= 0 && (c.0 as usize) < cols && (c.1 as usize) < rows;
+        let crect = |c: (i64, i64)| Rect::from_min_size(o_s + Vec2::new(c.0 as f32 * cs.x, c.1 as f32 * cs.y), cs);
+        let hover = resp.hover_pos().map(cell).filter(|c| dentro(*c));
+        let pt = &self.pintor;
+        match (pt.trazo, hover) {
+            (Some(t), _) if pt.herr == mapa::Herr::Rect => {
+                let a = (t.inicio.0.min(t.ultima.0).max(0), t.inicio.1.min(t.ultima.1).max(0));
+                let b = (t.inicio.0.max(t.ultima.0).min(cols as i64 - 1), t.inicio.1.max(t.ultima.1).min(rows as i64 - 1));
+                let r = crect(a).union(crect(b));
+                let c = if t.borrar { DANGER } else { ACCENT };
+                if !t.borrar {
+                    for y in a.1..=b.1 {
+                        for x in a.0..=b.0 {
+                            mapa::baldosa(painter, crect((x, y)), pt.baldosa, tile, tex.as_ref(), Color32::from_white_alpha(150));
+                        }
+                    }
+                }
+                painter.rect_filled(r, 0., c.gamma_multiply(0.15));
+                painter.rect_stroke(r, 0., Stroke::new(2., c), egui::StrokeKind::Inside);
+            }
+            (_, Some(c)) => {
+                let r = crect(c);
+                match pt.herr {
+                    mapa::Herr::Borrador => {
+                        painter.rect_filled(r, 0., DANGER.gamma_multiply(0.25));
+                        painter.rect_stroke(r, 0., Stroke::new(2., DANGER), egui::StrokeKind::Inside);
+                    }
+                    mapa::Herr::Gotero => drop(painter.rect_stroke(r, 0., Stroke::new(2., Color32::WHITE), egui::StrokeKind::Inside)),
+                    _ => {
+                        mapa::baldosa(painter, r, pt.baldosa, tile, tex.as_ref(), Color32::from_white_alpha(170));
+                        painter.rect_stroke(r, 0., Stroke::new(2., Color32::WHITE), egui::StrokeKind::Inside);
+                    }
+                }
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            }
+            _ => {}
+        }
+        // Trazos: desde que se aprieta el botón sobre el lienzo hasta que se suelta.
+        let down = resp.is_pointer_button_down_on();
+        let (prim, sec, p) = ui.input(|i| (i.pointer.primary_down(), i.pointer.secondary_down(), i.pointer.latest_pos()));
+        let (herr, baldosa, trazo) = (self.pintor.herr, self.pintor.baldosa, self.pintor.trazo);
+        let Some(Kind::Tilemap { data, .. }) = self.obj_mut(name).map(|o| &mut o.kind) else { return };
+        match (down && (prim || sec), trazo, p.map(cell)) {
+            (true, None, Some(c)) if dentro(c) => {
+                let borrar = (sec && !prim) || herr == mapa::Herr::Borrador;
+                let v = if borrar { -1 } else { baldosa };
+                match herr {
+                    mapa::Herr::Pincel | mapa::Herr::Borrador => drop(mapa::poner(data, cols, rows, c.0, c.1, v)),
+                    mapa::Herr::Rellenar => drop(mapa::rellenar(data, cols, rows, c.0, c.1, v)),
+                    mapa::Herr::Gotero if !borrar => {
+                        let t = data.get(c.1 as usize * cols + c.0 as usize).copied().unwrap_or(-1);
+                        if t >= 0 {
+                            self.pintor.baldosa = t;
+                            self.pintor.herr = mapa::Herr::Pincel;
+                        }
+                    }
+                    _ => {}
+                }
+                self.pintor.trazo = Some(mapa::Trazo { inicio: c, ultima: c, borrar });
+            }
+            (true, Some(t), Some(c)) => {
+                let v = if t.borrar { -1 } else { baldosa };
+                if matches!(herr, mapa::Herr::Pincel | mapa::Herr::Borrador) && c != t.ultima {
+                    mapa::poner_linea(data, cols, rows, t.ultima, c, v);
+                }
+                self.pintor.trazo = Some(mapa::Trazo { ultima: c, ..t });
+            }
+            (false, Some(t), _) => {
+                if herr == mapa::Herr::Rect {
+                    mapa::llenar_rect(data, cols, rows, t.inicio, t.ultima, if t.borrar { -1 } else { baldosa });
+                }
+                self.pintor.trazo = None;
+            }
+            _ => {}
+        }
+    }
+
     fn canvas(&mut self, ui: &mut Ui) {
+        if let Some((_, name)) = self.mapa_sel() {
+            self.panel_mapa(ui, &name);
+        }
+        let pintando = self.pintando();
+        if pintando.is_none() {
+            self.pintor.trazo = None;
+        }
         Frame::new().inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
             ui.horizontal(|ui| {
-                seg(ui, |ui| {
-                    if seg_btn(ui, !self.placing, it(ic::CURSOR, "Seleccionar")).on_hover_text("Seleccionar y mover instancias").clicked() {
-                        self.placing = false;
-                    }
-                    if seg_btn(ui, self.placing, it(ic::PLUS, "Colocar")).on_hover_text("Clic en el lienzo crea una instancia del objeto seleccionado").clicked() {
-                        self.placing = true;
-                    }
-                });
+                if let Some((_, n)) = &pintando {
+                    ui.label(RichText::new(ic::PAINT_BRUSH).size(16.).color(ACCENT));
+                    ui.label(RichText::new(format!("Pintando «{n}» con {}", self.pintor.herr.nombre().to_lowercase())).font(sb(14.)));
+                    ui.add_space(8.);
+                } else {
+                    seg(ui, |ui| {
+                        if seg_btn(ui, !self.placing, it(ic::CURSOR, "Seleccionar")).on_hover_text("Seleccionar y mover instancias").clicked() {
+                            self.placing = false;
+                        }
+                        if seg_btn(ui, self.placing, it(ic::PLUS, "Colocar")).on_hover_text("Clic en el lienzo crea una instancia del objeto seleccionado").clicked() {
+                            self.placing = true;
+                        }
+                    });
+                }
                 seg(ui, |ui| {
                     if seg_btn(ui, self.snap, it(ic::MAGNET, "Rejilla")).on_hover_text("Imantar a la rejilla").clicked() {
                         self.snap = !self.snap;
@@ -1457,8 +1891,9 @@ impl App {
                 if ui.button(it(ic::FIT, "Ajustar vista")).clicked() {
                     self.fit = true;
                 }
+                let hint = if pintando.is_some() { "Rueda: zoom. Botón del medio: mover la vista" } else { "Rueda: zoom. Botón derecho: mover la vista" };
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add(egui::Label::new(RichText::new("Rueda: zoom. Botón derecho: mover la vista").small().color(TEXT_MUTED)).truncate());
+                    ui.add(egui::Label::new(RichText::new(hint).small().color(TEXT_MUTED)).truncate());
                 });
             });
         });
@@ -1478,7 +1913,7 @@ impl App {
                 self.fit = false;
             }
         }
-        if resp.dragged_by(PointerButton::Middle) || resp.dragged_by(PointerButton::Secondary) {
+        if resp.dragged_by(PointerButton::Middle) || (resp.dragged_by(PointerButton::Secondary) && pintando.is_none()) {
             self.pan += resp.drag_delta();
             self.fit = false;
         }
@@ -1492,6 +1927,7 @@ impl App {
         let frames: Vec<String> = self.p.objects_of(s)
             .filter_map(|o| match &o.kind {
                 Kind::Sprite { animations, .. } => animations.first().and_then(|a| a.frames.first()).cloned(),
+                Kind::Tilemap { tileset, .. } if !tileset.is_empty() => Some(tileset.clone()),
                 _ => None,
             })
             .collect();
@@ -1552,6 +1988,15 @@ impl App {
                         }
                     }
                 }
+                Kind::Tilemap { tileset, tile, cols, rows, data, .. } => {
+                    let tex = self.tex.get(tileset).cloned().flatten();
+                    let (c, r) = ((*cols).max(1), (*rows).max(1));
+                    mapa::dibujar(&painter, sr.min, Vec2::new(sr.width() / c as f32, sr.height() / r as f32), *cols, *rows, data, *tile, tex.as_ref());
+                    if data.iter().all(|v| *v < 0) {
+                        painter.rect_stroke(sr, 0., Stroke::new(1., BORDER_STRONG), egui::StrokeKind::Inside);
+                        painter.text(sr.center(), Align2::CENTER_CENTER, format!("{}  Mapa vacío: selecciónalo y píntalo", ic::MAP), egui::FontId::proportional(14.), TEXT_MUTED);
+                    }
+                }
             }
             items.push((i, Rect::from_min_size(pos.to_pos2(), sz)));
         }
@@ -1576,6 +2021,13 @@ impl App {
         }
 
         // Interacción
+        if let Some((ii, name)) = pintando {
+            self.pintar_mapa(ui, &resp, &painter, ii, &name, org, z);
+            if let (Some(o), Some(p)) = (resp.dnd_release_payload::<String>(), resp.hover_pos()) {
+                self.add_instance((*o).clone(), to_w(p));
+            }
+            return;
+        }
         let sc = self.sc;
         if resp.drag_started_by(PointerButton::Primary) {
             if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_w) {
@@ -2181,6 +2633,207 @@ impl App {
 }
 
 impl App {
+    /// Pregunta después de «+ Sprite» (dibujar o elegir imágenes) y «+ Mapa» (qué baldosas usar).
+    fn nuevo_ui(&mut self, ctx: &egui::Context) {
+        let Some(nv) = self.nuevo.as_ref() else { return };
+        let (mapa_, name) = match nv {
+            Nuevo::Sprite(n) => (false, n.clone()),
+            Nuevo::Mapa(n) => (true, n.clone()),
+        };
+        if self.obj_mut(&name).is_none() {
+            self.nuevo = None;
+            return;
+        }
+        if self.files_at.is_none_or(|t| t.elapsed().as_secs() >= 5) {
+            self.files = buscar_archivos(&self.base_dir());
+            self.files_at = Some(std::time::Instant::now());
+        }
+        let imgs: Vec<String> = self.files.iter().filter(|f| [".png", ".jpg", ".jpeg"].iter().any(|x| f.to_lowercase().ends_with(x))).cloned().collect();
+        let thumbs: Vec<(String, Option<egui::TextureHandle>)> = if mapa_ { imgs.iter().take(12).map(|f| (f.clone(), self.texture(ctx, f))).collect() } else { vec![] };
+        let guardado = self.path.is_some();
+        #[derive(PartialEq)]
+        enum A {
+            Dibujar,
+            Elegir,
+            Ejemplo,
+            Usar(String),
+            Guardar,
+            Cerrar,
+        }
+        let mut act = None;
+        let frame = Frame::window(&ctx.global_style()).inner_margin(20).corner_radius(12);
+        let r = egui::Modal::new(egui::Id::unique("nuevo_objeto")).frame(frame).show(ctx, |ui| {
+            ui.set_width(520.);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(if mapa_ { ic::MAP } else { ic::IMAGE }).size(22.).color(ACCENT));
+                ui.label(RichText::new(if mapa_ { format!("Baldosas para «{name}»") } else { format!("Tu sprite «{name}»") }).font(sb(20.)));
+            });
+            ui.label(RichText::new(if mapa_ { mapa::TEXTO_NINOS } else { "¿Cómo quieres que se vea? Puedes dibujarlo pixel por pixel o usar imágenes que ya tengas." }).color(TEXT_SOFT));
+            ui.add_space(8.);
+            if !guardado {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(ic::WARNING).color(WARN));
+                    ui.label("Para crear imágenes, primero guarda el proyecto.");
+                    if ui.button(it(ic::FLOPPY, "Guardar proyecto…")).clicked() {
+                        act = Some(A::Guardar);
+                    }
+                });
+                ui.add_space(6.);
+            }
+            ui.spacing_mut().button_padding = Vec2::new(14., 9.);
+            ui.horizontal_wrapped(|ui| {
+                if mapa_ {
+                    ui.add_enabled_ui(guardado, |ui| {
+                        if primary(ui, (on_accent(ic::SPARKLE).size(17.), on_accent("Crear baldosas de ejemplo").font(sb(15.)))).on_hover_text("Pasto, tierra, piedra, ladrillo, madera, agua, nube y hojas").clicked() {
+                            act = Some(A::Ejemplo);
+                        }
+                        if ui.button((RichText::new(ic::PALETTE).size(17.).color(ACCENT), RichText::new("Dibujar baldosas").font(sb(15.)))).clicked() {
+                            act = Some(A::Dibujar);
+                        }
+                    });
+                } else {
+                    ui.add_enabled_ui(guardado, |ui| {
+                        if primary(ui, (on_accent(ic::PALETTE).size(17.), on_accent("Dibujar uno nuevo").font(sb(15.)))).clicked() {
+                            act = Some(A::Dibujar);
+                        }
+                    });
+                }
+                if ui.button((RichText::new(ic::FOLDER_OPEN).size(17.).color(TEXT_MUTED), RichText::new(if mapa_ { "Elegir archivo…" } else { "Elegir imágenes…" }).font(sb(15.)))).clicked() {
+                    act = Some(A::Elegir);
+                }
+            });
+            if mapa_ && !thumbs.is_empty() {
+                ui.add_space(8.);
+                ui.label(RichText::new("O usa una imagen del proyecto").font(sb(14.)).color(TEXT_MUTED));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::splat(6.);
+                    for (f, t) in &thumbs {
+                        let (rect, r) = ui.allocate_exact_size(Vec2::new(76., 76.), Sense::click());
+                        let p = ui.painter();
+                        p.rect_filled(rect, 8, if r.hovered() { SURFACE_HOVER } else { SURFACE });
+                        p.rect_stroke(rect, 8, Stroke::new(1., if r.hovered() { BORDER_STRONG } else { BORDER }), egui::StrokeKind::Inside);
+                        let pic = rect.shrink(8.);
+                        match t {
+                            Some(t) => {
+                                let s = t.size_vec2();
+                                let k = (pic.width() / s.x).min(pic.height() / s.y);
+                                p.image(t.id(), Rect::from_center_size(pic.center(), s * k), Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)), Color32::WHITE);
+                            }
+                            None => drop(p.text(pic.center(), Align2::CENTER_CENTER, ic::IMAGE, egui::FontId::proportional(24.), TEXT_FAINT)),
+                        }
+                        if r.on_hover_text(f.as_str()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            act = Some(A::Usar(f.clone()));
+                        }
+                    }
+                });
+            }
+            ui.add_space(10.);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Después").on_hover_text("Puedes hacerlo luego desde las propiedades del objeto").clicked() {
+                    act = Some(A::Cerrar);
+                }
+            });
+        });
+        if act.is_none() && r.should_close() {
+            act = Some(A::Cerrar);
+        }
+        let Some(a) = act else { return };
+        if a != A::Guardar {
+            self.nuevo = None;
+        }
+        let base = self.base_dir();
+        match a {
+            A::Guardar => drop(self.save(false)),
+            A::Cerrar => {}
+            A::Ejemplo => self.usar_baldosas_ejemplo(&name),
+            A::Dibujar if mapa_ => self.abrir_dibujo(dibujo::Destino::Baldosas { obj: name }),
+            A::Dibujar => self.abrir_dibujo(dibujo::Destino::Anim { obj: name, anim: 0 }),
+            A::Usar(f) => {
+                if let Some(Kind::Tilemap { tileset, .. }) = self.obj_mut(&name).map(|o| &mut o.kind) {
+                    *tileset = f;
+                }
+            }
+            A::Elegir => {
+                let d = rfd::FileDialog::new().add_filter("Imagen", &["png", "jpg", "jpeg"]).set_directory(&base);
+                match self.obj_mut(&name).map(|o| &mut o.kind) {
+                    Some(Kind::Tilemap { tileset, .. }) => {
+                        if let Some(f) = d.pick_file() {
+                            *tileset = rel(&base, &f);
+                        }
+                    }
+                    Some(Kind::Sprite { animations, .. }) => {
+                        if let (Some(fs), Some(a)) = (d.pick_files(), animations.first_mut()) {
+                            a.frames.extend(fs.iter().map(|f| rel(&base, f)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// `--abrir mapa`: elige (o crea) un mapa y pinta un paisaje de prueba con las funciones de pintado.
+    fn abrir_mapa(&mut self) {
+        self.tab = Tab::Escena;
+        let s = &self.p.scenes[self.sc];
+        let found = s.instances.iter().position(|i| self.p.objects_of(s).any(|o| o.name == i.obj && matches!(o.kind, Kind::Tilemap { .. })));
+        let i = match found {
+            Some(i) => i,
+            None => {
+                self.nuevo_mapa();
+                self.nuevo = None;
+                let n = self.sel_obj.clone().unwrap_or_default();
+                self.usar_baldosas_ejemplo(&n);
+                self.sel_inst.unwrap_or(0)
+            }
+        };
+        self.sel_inst = Some(i);
+        let name = self.p.scenes[self.sc].instances[i].obj.clone();
+        self.sel_obj = Some(name.clone());
+        if let Some(Kind::Tilemap { cols, rows, data, .. }) = self.obj_mut(&name).map(|o| &mut o.kind) {
+            let (c, r) = (*cols, *rows);
+            let (ci, ri) = (c as i64, r as i64);
+            // Suelo: pasto arriba y tierra abajo, con un pozo de agua.
+            mapa::llenar_rect(data, c, r, (0, ri - 3), (ci - 1, ri - 3), 0);
+            mapa::llenar_rect(data, c, r, (0, ri - 2), (ci - 1, ri - 1), 1);
+            mapa::llenar_rect(data, c, r, (10, ri - 3), (12, ri - 1), -1);
+            mapa::llenar_rect(data, c, r, (10, ri - 2), (12, ri - 1), 5);
+            // Pared de ladrillos, plataformas de madera y piedra, una nube y un arbusto.
+            mapa::llenar_rect(data, c, r, (17, ri - 6), (18, ri - 4), 3);
+            mapa::poner_linea(data, c, r, (4, ri - 7), (7, ri - 7), 4);
+            mapa::poner_linea(data, c, r, (13, ri - 10), (16, ri - 10), 2);
+            mapa::poner_linea(data, c, r, (3, 2), (5, 2), 6);
+            mapa::llenar_rect(data, c, r, (21, ri - 5), (22, ri - 4), 7);
+        }
+        self.pintor = mapa::Pintor { herr: mapa::Herr::Rect, baldosa: 3, ..Default::default() };
+        self.say(Nivel::Ok, "Mapa pintado de prueba (--abrir mapa)");
+    }
+
+    /// `--abrir dibujo` / `cebolla` / `baldosas`: editor de dibujo con un dibujo de prueba.
+    fn abrir_dibujo_prueba(&mut self, que: &str) {
+        if que == "baldosas" {
+            self.abrir_mapa();
+            let n = self.sel_obj.clone().unwrap_or_default();
+            return self.abrir_dibujo(dibujo::Destino::Baldosas { obj: n });
+        }
+        let n = self.nombre_libre("Dibujo");
+        let kind = Kind::Sprite { w: 0., h: 0., animations: vec![Animation { name: "salta".into(), frames: vec![], fps: 6., looping: true }] };
+        self.scene().objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![], vars: Vars::new() });
+        self.sel_obj = Some(n.clone());
+        self.abrir_dibujo(dibujo::Destino::Anim { obj: n, anim: 0 });
+        if let Some(d) = self.dib.as_mut() {
+            dibujo::demo(d);
+            d.cebolla = que == "cebolla";
+            d.cur = if que == "cebolla" { 1 } else { 0 };
+            d.play = que != "cebolla";
+        }
+        if que == "dibujo-guardado" {
+            if let Some(mut d) = self.dib.take() {
+                self.guardar_dibujo(&mut d);
+            }
+        }
+    }
+
     /// Vista inicial pedida con `--abrir` (para probar la interfaz).
     fn abrir(&mut self, que: &str) {
         let t = Target::Scene(self.sc);
@@ -2210,6 +2863,23 @@ impl App {
             "objeto" => self.sel = Some(facil::Selector::new(at(true), t, bloque(self, "collides"))),
             "arreglar" => facil::MOSTRAR_PRIMERO.store(true, std::sync::atomic::Ordering::Relaxed),
             "ficha" => facil::ABRIR_FICHA.store(8, std::sync::atomic::Ordering::Relaxed),
+            "mapa" => self.abrir_mapa(),
+            "dibujo" | "cebolla" | "baldosas" | "dibujo-guardado" => {
+                self.tab = Tab::Escena;
+                self.abrir_dibujo_prueba(que);
+            }
+            "sprite-nuevo" => {
+                self.tab = Tab::Escena;
+                let n = self.nombre_libre("Sprite");
+                let kind = Kind::Sprite { w: 0., h: 0., animations: vec![Animation { name: "quieto".into(), frames: vec![], fps: 10., looping: true }] };
+                self.scene().objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![], vars: Vars::new() });
+                self.sel_obj = Some(n.clone());
+                self.nuevo = Some(Nuevo::Sprite(n));
+            }
+            "mapa-nuevo" => {
+                self.tab = Tab::Escena;
+                self.nuevo_mapa();
+            }
             _ => {}
         }
     }
@@ -2265,7 +2935,8 @@ impl eframe::App for App {
 
         // Atajos
         let typing = ctx.egui_wants_keyboard_input();
-        let modal = self.ed.is_some() || self.exp.is_some() || self.confirm.is_some() || self.sel.is_some() || self.rec.is_some() || self.asis.is_some();
+        let modal = self.ed.is_some() || self.exp.is_some() || self.confirm.is_some() || self.sel.is_some() || self.rec.is_some() || self.asis.is_some()
+            || self.dib.is_some() || self.nuevo.is_some();
         let free = !typing && !modal;
         let scene_keys = free && self.tab == Tab::Escena;
         let (cmd, cs) = (Modifiers::COMMAND, Modifiers::COMMAND | Modifiers::SHIFT);
@@ -2280,6 +2951,12 @@ impl eframe::App for App {
             for (key, t) in [(Key::Num1, Tab::Escena), (Key::Num2, Tab::Eventos), (Key::Num3, Tab::Funciones), (Key::Num4, Tab::Variables)] {
                 if !modal && i.consume_key(cmd, key) {
                     self.tab = t;
+                }
+            }
+            // Herramientas de pintado del mapa: B, E, G, R, I.
+            if scene_keys && self.pintando().is_some() {
+                if let Some(h) = mapa::Herr::TODAS.into_iter().find(|h| i.consume_key(Modifiers::NONE, h.tecla())) {
+                    self.pintor.herr = h;
                 }
             }
             let mut nudge = Vec2::ZERO;
@@ -2359,6 +3036,18 @@ impl eframe::App for App {
             }
         }
         self.modales_kid(&ctx);
+        self.nuevo_ui(&ctx);
+        if let Some(mut d) = self.dib.take() {
+            match dibujo::ventana(&ctx, &mut d, self.facil) {
+                None => self.dib = Some(d),
+                Some(dibujo::DibRes::Cancelar) => self.say(Nivel::Info, "Dibujo cerrado sin guardar"),
+                Some(dibujo::DibRes::Guardar) => {
+                    if !self.guardar_dibujo(&mut d) {
+                        self.dib = Some(d);
+                    }
+                }
+            }
+        }
         self.confirm_ui(&ctx);
         self.export_ui(&ctx);
 

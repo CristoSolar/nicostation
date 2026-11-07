@@ -64,6 +64,17 @@ async fn game() {
     let mut tex: HashMap<String, Texture2D> = HashMap::new();
     let defs = project.objects.iter_mut().chain(project.scenes.iter_mut().flat_map(|s| s.objects.iter_mut()));
     for o in defs {
+        if let Kind::Tilemap { tileset, .. } = &o.kind {
+            if !tex.contains_key(tileset) {
+                match load_texture(tileset).await {
+                    Ok(t) => {
+                        t.set_filter(FilterMode::Nearest);
+                        tex.insert(tileset.clone(), t);
+                    }
+                    Err(e) => eprintln!("imagen {tileset}: {e}"),
+                }
+            }
+        }
         if let Kind::Sprite { w, h, animations } = &mut o.kind {
             for f in animations.iter().flat_map(|a| a.frames.iter()) {
                 if !tex.contains_key(f) {
@@ -168,6 +179,30 @@ async fn game() {
                                 ..Default::default()
                             }),
                             None => draw_rectangle(c.x - o.w * k / 2., c.y - o.h * k / 2., o.w * k, o.h * k, MAGENTA),
+                        }
+                    }
+                    Kind::Tilemap { tileset, tile, cols, .. } => {
+                        let Some(t) = tex.get(tileset) else { continue };
+                        let per_row = (t.width() / tile).floor().max(1.) as i32;
+                        // Solo las celdas que se ven en pantalla.
+                        let (vw, vh) = (p.width / z, p.height / z);
+                        let (c0, c1) = (((cam.0 - vw / 2. - o.x) / tile).floor().max(0.) as usize, ((cam.0 + vw / 2. - o.x) / tile).ceil().max(0.) as usize);
+                        let (r0, r1) = (((cam.1 - vh / 2. - o.y) / tile).floor().max(0.) as usize, ((cam.1 + vh / 2. - o.y) / tile).ceil().max(0.) as usize);
+                        let rows = o.tiles.len() / cols.max(&1);
+                        for r in r0..r1.min(rows) {
+                            for c in c0..c1.min(*cols) {
+                                let n = o.tiles[r * cols + c];
+                                if n < 0 {
+                                    continue;
+                                }
+                                let at = to_screen(o.x + c as f32 * tile, o.y + r as f32 * tile);
+                                draw_texture_ex(t, at.x, at.y, Color::from_rgba(255, 255, 255, alpha), DrawTextureParams {
+                                    // +0.5 px para que no se vean rayas entre baldosas al escalar
+                                    dest_size: Some(vec2(tile * k + 0.5, tile * k + 0.5)),
+                                    source: Some(Rect::new((n % per_row) as f32 * tile, (n / per_row) as f32 * tile, *tile, *tile)),
+                                    ..Default::default()
+                                });
+                            }
                         }
                     }
                     Kind::Text { size, color, .. } => {

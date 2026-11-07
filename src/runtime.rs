@@ -63,6 +63,8 @@ pub struct Inst {
     floor: Option<(u64, f32, f32)>,
     /// Jumpthru que se está atravesando hacia abajo.
     ignore_jt: Option<u64>,
+    /// Baldosas de un mapa (copia de las del objeto; las acciones pueden cambiarlas).
+    pub tiles: Vec<i32>,
 }
 
 const FALLING: u8 = 0;
@@ -81,7 +83,9 @@ enum PKind {
 /// Plataforma vista por el Platformer.
 #[derive(Clone, Copy)]
 struct Plat {
+    /// Instancia dueña (un mapa de baldosas aporta varias formas).
     i: usize,
+    poly: [(f32, f32); 4],
     kind: PKind,
     grabbable: bool,
 }
@@ -204,6 +208,11 @@ impl World {
             Kind::Sprite { w, h, .. } => (*w, *h, String::new()),
             Kind::Text { text, size, .. } => (text.chars().count() as f32 * size * 0.5, *size, text.clone()),
             Kind::Box { w, h, .. } => (*w, *h, String::new()),
+            Kind::Tilemap { tile, cols, rows, .. } => (*cols as f32 * tile, *rows as f32 * tile, String::new()),
+        };
+        let tiles = match &t.kind {
+            Kind::Tilemap { cols, rows, data, .. } => (0..cols * rows).map(|k| data.get(k).copied().unwrap_or(-1)).collect(),
+            _ => vec![],
         };
         self.next_id += 1;
         self.insts.push(Inst {
@@ -217,9 +226,41 @@ impl World {
             layer: layer.into(),
             text,
             vars: t.vars.clone(),
+            tiles,
             ..Default::default()
         });
         self.insts.len() - 1
+    }
+
+    /// Formas de choque: el rectángulo rotado, o en un mapa de baldosas las tiras de baldosas sólidas de cada fila.
+    pub fn shapes(&self, i: usize) -> Vec<[(f32, f32); 4]> {
+        let me = &self.insts[i];
+        let Some(Kind::Tilemap { tile, cols, pass, .. }) = self.types.get(&me.obj).map(|t| &t.kind) else {
+            return vec![me.hitbox()];
+        };
+        let solid = |k: usize| me.tiles.get(k).is_some_and(|&t| t >= 0 && !pass.contains(&t));
+        let mut out = vec![];
+        for r in 0..me.tiles.len() / cols.max(&1) {
+            let mut c = 0;
+            while c < *cols {
+                if !solid(r * cols + c) {
+                    c += 1;
+                    continue;
+                }
+                let start = c;
+                while c < *cols && solid(r * cols + c) {
+                    c += 1;
+                }
+                let (x0, x1, y0, y1) = (me.x + start as f32 * tile, me.x + c as f32 * tile, me.y + r as f32 * tile, me.y + (r + 1) as f32 * tile);
+                out.push([(x0, y0), (x1, y0), (x1, y1), (x0, y1)]);
+            }
+        }
+        out
+    }
+
+    fn shapes_touch(&self, i: usize, j: usize) -> bool {
+        let b = self.shapes(j);
+        self.shapes(i).iter().any(|a| b.iter().any(|b| sat(a, b).is_some()))
     }
 
     // ---------- frame ----------
@@ -430,7 +471,7 @@ impl World {
                         && if dist > 0. {
                             (w.insts[i].cx() - w.insts[j].cx()).hypot(w.insts[i].cy() - w.insts[j].cy()) < dist
                         } else {
-                            sat(&w.insts[i].hitbox(), &w.insts[j].hitbox()).is_some()
+                            w.shapes_touch(i, j)
                         }
                 };
                 let mine = self.pick(a(0), sol);
@@ -454,7 +495,7 @@ impl World {
             }
             "cursor_on" => self.filter(a(0), c.not, sol, |w, i| {
                 let (mx, my) = w.mouse_on(&w.insts[i].layer);
-                point_in(&w.insts[i].hitbox(), mx, my)
+                w.shapes(i).iter().any(|s| point_in(s, mx, my))
             }),
             "compare_prop" => {
                 let (prop, op, val) = (a(1).to_string(), a(2).to_string(), a(3).to_string());
@@ -546,11 +587,26 @@ impl World {
                 for i in self.pick(a(0), sol) {
                     for &j in &obstacles {
                         if i != j {
-                            if let Some((dx, dy)) = sat(&self.insts[i].hitbox(), &self.insts[j].hitbox()) {
-                                self.insts[i].x += dx;
-                                self.insts[i].y += dy;
+                            for shape in self.shapes(j) {
+                                if let Some((dx, dy)) = sat(&self.insts[i].hitbox(), &shape) {
+                                    self.insts[i].x += dx;
+                                    self.insts[i].y += dy;
+                                }
                             }
                         }
+                    }
+                }
+            }
+            "set_tile" => {
+                for i in self.pick(a(0), sol) {
+                    let cols = match &self.types[&self.insts[i].obj].kind {
+                        Kind::Tilemap { cols, .. } => *cols,
+                        _ => continue,
+                    };
+                    let (c, r, t) = (num(self, a(1), sol, Some(i)), num(self, a(2), sol, Some(i)), num(self, a(3), sol, Some(i)));
+                    let k = r as i64 * cols as i64 + c as i64;
+                    if c >= 0. && (c as usize) < cols && k >= 0 && (k as usize) < self.insts[i].tiles.len() {
+                        self.insts[i].tiles[k as usize] = t as i32;
                     }
                 }
             }
@@ -745,18 +801,17 @@ impl World {
 
     fn behaviors_pre(&mut self) {
         let dt = self.dt;
-        let plats: Vec<Plat> = (0..self.insts.len())
-            .filter_map(|i| {
-                self.types[&self.insts[i].obj].behaviors.iter().find_map(|b| match b {
-                    Behavior::Platform { jumpthru, ladder, grabbable } => Some(Plat {
-                        i,
-                        kind: if *ladder { PKind::Ladder } else if *jumpthru { PKind::Jumpthru } else { PKind::Solid },
-                        grabbable: *grabbable,
-                    }),
-                    _ => None,
-                })
-            })
-            .collect();
+        let mut plats: Vec<Plat> = vec![];
+        for i in 0..self.insts.len() {
+            let b = self.types[&self.insts[i].obj].behaviors.iter().find_map(|b| match b {
+                Behavior::Platform { jumpthru, ladder, grabbable } => Some((*jumpthru, *ladder, *grabbable)),
+                _ => None,
+            });
+            if let Some((jumpthru, ladder, grabbable)) = b.filter(|_| !self.insts[i].dead) {
+                let kind = if ladder { PKind::Ladder } else if jumpthru { PKind::Jumpthru } else { PKind::Solid };
+                plats.extend(self.shapes(i).into_iter().map(|poly| Plat { i, poly, kind, grabbable }));
+            }
+        }
         for i in 0..self.insts.len() {
             if self.insts[i].dead {
                 continue;
@@ -822,7 +877,7 @@ impl World {
         let dt = self.dt;
         let down = |k: &str| self.input.down.contains(k);
         let (left, right, up, dn) = (down("Left"), down("Right"), down("Up"), down("Down"));
-        let in_ladder = plats.iter().any(|p| p.kind == PKind::Ladder && self.touches(i, p.i));
+        let in_ladder = plats.iter().any(|p| p.kind == PKind::Ladder && self.touches(i, &p.poly));
         // Arriba salta, salvo que esté en una escalera (ahí sirve para subir).
         let jump_key = down("Space") || down("LeftShift") || (up && !in_ladder);
         let slope = slope_max_angle.clamp(0., 89.).to_radians().tan();
@@ -960,9 +1015,10 @@ impl World {
             let tol = 10.; // xGrabTolerance de GDevelop
             let me = self.insts[i].clone();
             let edge = plats.iter().filter(|p| p.grabbable && p.kind != PKind::Ladder && p.i != i).find_map(|p| {
-                let o = &self.insts[p.i];
-                let side = (me.x + me.w - o.x).abs() <= tol || (me.x - (o.x + o.w)).abs() <= tol;
-                (side && old_y <= o.y && me.y >= o.y).then_some(o.y)
+                let (ox, oy) = p.poly.iter().fold((f32::MAX, f32::MAX), |(x, y), q| (x.min(q.0), y.min(q.1)));
+                let ox1 = p.poly.iter().fold(f32::MIN, |x, q| x.max(q.0));
+                let side = (me.x + me.w - ox).abs() <= tol || (me.x - ox1).abs() <= tol;
+                (side && old_y <= oy && me.y >= oy).then_some(oy)
             });
             if let Some(top) = edge {
                 let me = &mut self.insts[i];
@@ -972,7 +1028,7 @@ impl World {
 
         // Dejar de ignorar el jumpthru cuando ya no lo toca.
         if let Some(jt) = self.insts[i].ignore_jt {
-            let touching = plats.iter().any(|p| self.insts[p.i].id == jt && self.touches(i, p.i));
+            let touching = plats.iter().any(|p| self.insts[p.i].id == jt && self.touches(i, &p.poly));
             if !touching {
                 self.insts[i].ignore_jt = None;
             }
@@ -991,13 +1047,13 @@ impl World {
     }
 
     /// Se solapan de verdad (más de una centésima de píxel).
-    fn touches(&self, i: usize, p: usize) -> bool {
-        i != p && sat(&self.aabb(i), &self.insts[p].hitbox()).is_some_and(|(x, y)| x.hypot(y) > 0.01)
+    fn touches(&self, i: usize, poly: &[(f32, f32); 4]) -> bool {
+        sat(&self.aabb(i), poly).is_some_and(|(x, y)| x.hypot(y) > 0.01)
     }
 
     /// Choca con una plataforma sólida (las jumpthru y escaleras no bloquean).
     fn blocked(&self, i: usize, plats: &[Plat]) -> bool {
-        plats.iter().any(|p| p.kind == PKind::Solid && self.touches(i, p.i))
+        plats.iter().any(|p| p.kind == PKind::Solid && p.i != i && self.touches(i, &p.poly))
     }
 
     /// Retrocede de a 1 px hacia `old` hasta salir del choque.
@@ -1026,7 +1082,7 @@ impl World {
             .iter()
             .filter(|p| p.i != i && p.kind != PKind::Ladder && !(solid_only && p.kind != PKind::Solid))
             .filter(|p| !(p.kind == PKind::Jumpthru && me.ignore_jt == Some(self.insts[p.i].id)))
-            .filter_map(|p| top_between(&self.insts[p.i].hitbox(), x0, x1).map(|t| (t, p)))
+            .filter_map(|p| top_between(&p.poly, x0, x1).map(|t| (t, p)))
             .filter(|(t, p)| {
                 // Un jumpthru solo cuenta si los pies estaban por encima de él.
                 *t >= bottom - up && *t <= bottom + down && (p.kind != PKind::Jumpthru || bottom <= t + up.max(0.5))
@@ -1139,6 +1195,8 @@ pub fn sat(a: &[(f32, f32)], b: &[(f32, f32)]) -> Option<(f32, f32)> {
 
 /// Punto más alto (menor y) de un polígono convexo entre x0 y x1: la superficie de una plataforma.
 fn top_between(poly: &[(f32, f32)], x0: f32, x1: f32) -> Option<f32> {
+    // Solo el interior: una pared que apenas roza el borde del personaje no es suelo.
+    let (x0, x1) = (x0 + 0.01, x1 - 0.01);
     let mut best: Option<f32> = None;
     let mut put = |y: f32| best = Some(best.map_or(y, |b| b.min(y)));
     for k in 0..poly.len() {
@@ -1250,6 +1308,19 @@ impl Ctx for Ev<'_> {
         Some(Value::Num(match name {
             "count" => w.expand(&obj()).iter().map(|o| w.all_of(o).count()).sum::<usize>() as f64,
             "picked" => w.pick(&obj(), self.sol).len() as f64,
+            // tile(Mapa, x, y): baldosa en esa posición del mundo (-1 = vacía)
+            "tile" => {
+                let n = |k: usize| args.get(k).map(|a| expr::eval(a, self).num() as f32).unwrap_or(0.);
+                let Some(&i) = w.pick(&obj(), self.sol).first() else { return Some(Value::Num(-1.)) };
+                let me = &w.insts[i];
+                let Some(Kind::Tilemap { tile, cols, .. }) = w.types.get(&me.obj).map(|t| &t.kind) else { return Some(Value::Num(-1.)) };
+                let (c, r) = (((n(1) - me.x) / tile).floor(), ((n(2) - me.y) / tile).floor());
+                if c < 0. || r < 0. || c as usize >= *cols {
+                    -1.
+                } else {
+                    me.tiles.get(r as usize * cols + c as usize).copied().unwrap_or(-1) as f64
+                }
+            }
             "timer" => {
                 let n = args.first().map(|a| expr::eval(a, self).text()).unwrap_or_default();
                 w.timers.get(&n).map(|t| w.time - t).unwrap_or(0.)
@@ -1449,6 +1520,47 @@ mod tests {
         let moved = p(&w).x - x0;
         assert!((55.0..65.0).contains(&moved), "avanzó {moved}");
         assert!(p(&w).on_floor);
+    }
+
+    #[test]
+    fn mapa_de_baldosas() {
+        // 10x4 baldosas de 32: suelo completo en la fila 3; en la fila 2, una baldosa de pasto (5) que no choca.
+        let mut data = vec![-1; 40];
+        data[30..40].fill(0);
+        data[2 * 10 + 6] = 5;
+        let data = serde_json::to_string(&data).unwrap();
+        let mut w = mundo_plataformas("", &format!(r#"{{"name":"M","type":"tilemap","tileset":"t.png","tile":32,"cols":10,"rows":4,
+            "data":{data},"pass":[5],"behaviors":[{{"type":"platform"}}]}}"#),
+            r#"{"obj":"P","x":40,"y":0},{"obj":"M","x":0,"y":0}"#,
+            r#"{"conds":[{"op":"key_down","args":["X"]}],"acts":[{"op":"set_tile","args":["M","floor(P.x / 32)","3","-1"]},{"op":"set_tile","args":["M","floor((P.x + P.w) / 32)","3","-1"]}]},
+               {"acts":[{"op":"set_var","args":["bajo","tile(M, P.cx, P.y + P.h + 1)"]}]}"#);
+        correr(&mut w, 1., &[]);
+        assert_eq!((p(&w).y, p(&w).on_floor), (66., true)); // 96 - 30
+        assert_eq!(w.vars["bajo"], Value::Num(0.));
+        // Camina sobre las uniones entre baldosas sin trabarse; el pasto (decoración) no lo frena.
+        correr(&mut w, 0.8, &["Right"]);
+        assert!(p(&w).x > 200., "avanzó hasta x = {}", p(&w).x);
+        assert_eq!((p(&w).y, p(&w).on_floor), (66., true));
+        // Romper el suelo bajo sus pies: cae.
+        correr(&mut w, 1. / 60., &["X"]);
+        correr(&mut w, 0.5, &[]);
+        assert!(p(&w).y > 100., "cayó: y = {}", p(&w).y);
+        assert_eq!(w.shapes(1).len(), 2); // el suelo quedó en dos tiras
+
+        // Nivel con un hueco de 3 baldosas: al caer pegado a la pared derecha del hueco no se queda
+        // "parado" sobre el borde de la pared (un rectángulo que solo roza al personaje no es suelo).
+        let mut data = vec![-1; 20 * 11];
+        for r in 8..11 {
+            for c in (0..9).chain(12..20) {
+                data[r * 20 + c] = 0;
+            }
+        }
+        let data = serde_json::to_string(&data).unwrap();
+        let mut w = mundo_plataformas("", &format!(r#"{{"name":"M","type":"tilemap","tileset":"t.png","tile":32,"cols":20,"rows":11,
+            "data":{data},"behaviors":[{{"type":"platform"}}]}}"#),
+            r#"{"obj":"P","x":40,"y":200},{"obj":"M","x":0,"y":0}"#, "");
+        correr(&mut w, 2.5, &["Right"]);
+        assert!(p(&w).y > 400., "cayó por el hueco: y = {}", p(&w).y);
     }
 
     #[test]

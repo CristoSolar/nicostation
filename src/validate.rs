@@ -19,6 +19,17 @@ pub fn validate(p: &Project, base: Option<&Path>) -> Vec<String> {
     let file_ok = |f: &str| base.is_none_or(|b| b.join(f).is_file());
     let all_objects: Vec<&ObjectDef> = p.objects.iter().chain(p.scenes.iter().flat_map(|s| s.objects.iter())).collect();
     for o in &all_objects {
+        if let Kind::Tilemap { tileset, tile, cols, rows, data, .. } = &o.kind {
+            if !file_ok(tileset) {
+                out.push(format!("objeto «{}»: no existe la imagen de baldosas «{tileset}»", o.name));
+            }
+            if *tile <= 0. || *cols == 0 || *rows == 0 {
+                out.push(format!("objeto «{}»: el mapa necesita tile > 0 y al menos 1 columna y 1 fila", o.name));
+            }
+            if data.len() > cols * rows {
+                out.push(format!("objeto «{}»: el mapa tiene {} celdas pero cols x rows = {}", o.name, data.len(), cols * rows));
+            }
+        }
         if let Kind::Sprite { animations, .. } = &o.kind {
             if animations.is_empty() || animations.iter().any(|a| a.frames.is_empty()) {
                 out.push(format!("objeto «{}»: cada sprite necesita al menos una animación con una imagen", o.name));

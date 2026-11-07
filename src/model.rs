@@ -148,6 +148,39 @@ pub enum Kind {
     },
     /// Rectángulo de color (prototipos sin imágenes).
     Box { w: f32, h: f32, color: [u8; 3] },
+    /// Mapa de baldosas: una grilla pintada con las baldosas de una imagen (tileset).
+    /// Con el comportamiento `platform`, cada baldosa sólida es suelo o pared.
+    Tilemap {
+        /// Imagen con las baldosas en grilla, de izquierda a derecha y de arriba a abajo.
+        tileset: String,
+        /// Tamaño de cada baldosa en px (cuadradas).
+        #[serde(default = "d32")]
+        tile: f32,
+        cols: usize,
+        rows: usize,
+        /// Índice de baldosa por celda, fila por fila; -1 = vacía.
+        #[serde(default)]
+        data: Vec<i32>,
+        /// Baldosas de decoración que no chocan (pasto, nubes...).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pass: Vec<i32>,
+    },
+}
+
+fn d32() -> f32 {
+    32.
+}
+
+impl Kind {
+    /// Baldosa en (columna, fila), o -1 si está vacía o fuera del mapa.
+    pub fn tile_at(&self, c: i64, r: i64) -> i32 {
+        match self {
+            Kind::Tilemap { cols, rows, data, .. } if c >= 0 && r >= 0 && (c as usize) < *cols && (r as usize) < *rows => {
+                data.get(r as usize * cols + c as usize).copied().unwrap_or(-1)
+            }
+            _ => -1,
+        }
+    }
 }
 
 fn text_size() -> f32 {

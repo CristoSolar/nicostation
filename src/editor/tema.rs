@@ -242,3 +242,18 @@ pub fn menu_spacing(ui: &mut Ui) {
     ui.spacing_mut().button_padding = Vec2::new(8., 4.);
     ui.set_min_width(200.);
 }
+
+/// Botón grande de herramienta: ícono arriba y nombre abajo; resaltado con el acento si está elegido.
+pub fn herr_btn(ui: &mut Ui, sel: bool, icon: &str, label: &str, tip: &str, size: Vec2) -> Response {
+    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
+    let p = ui.painter();
+    let hov = r.hovered();
+    p.rect_filled(rect, 8, if sel { blend(ACCENT, SURFACE, 0.24) } else if hov { SURFACE_HOVER } else { SURFACE });
+    p.rect_stroke(rect, 8, Stroke::new(if sel { 2. } else { 1. }, if sel { ACCENT } else if hov { BORDER_STRONG } else { BORDER }), egui::StrokeKind::Inside);
+    let c = rect.center();
+    p.text(egui::Pos2::new(c.x, rect.top() + size.y * 0.36), egui::Align2::CENTER_CENTER, icon, FontId::proportional(22.), if sel { ACCENT } else { TEXT });
+    let g = p.layout_no_wrap(label.to_string(), FontId::proportional(12.5), if sel { TEXT } else { TEXT_SOFT });
+    let g = if g.size().x > size.x - 6. { p.layout(label.to_string(), FontId::proportional(11.), TEXT_SOFT, size.x - 4.) } else { g };
+    p.galley(egui::Pos2::new(c.x - g.size().x / 2., rect.bottom() - 5. - g.size().y), g, TEXT);
+    r.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
+}

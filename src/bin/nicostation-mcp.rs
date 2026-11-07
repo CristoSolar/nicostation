@@ -106,6 +106,12 @@ fn tools() -> Vec<J> {
         t("objeto_poner", "Crea o reemplaza (por nombre) un objeto: sprite, text o box, con comportamientos y variables. Sin escena = objeto global.",
             json!({"escena": s("Escena (omitir = global)"), "objeto": o("Objeto, p. ej. {\"name\":\"Heroe\",\"type\":\"sprite\",\"animations\":[{\"name\":\"quieto\",\"frames\":[\"img/heroe.png\"]}],\"behaviors\":[{\"type\":\"platformer\"}]}")}), &["objeto"]),
         t("objeto_borrar", "Borra un objeto, sus instancias y su presencia en grupos.", json!({"escena": s("Escena (omitir = global)"), "nombre": s("Objeto")}), &["nombre"]),
+        t("mapa_pintar", "Pinta un mapa de baldosas (objeto type=tilemap) con filas de texto: cada carácter es una celda según la leyenda; '.' o ' ' = vacía.",
+            json!({"escena": s("Escena del objeto (omitir = global)"), "objeto": s("Nombre del objeto tilemap"),
+                   "filas": a("Filas de texto, p. ej. [\"..........\", \"####..####\"]"),
+                   "leyenda": o("Carácter -> índice de baldosa en el tileset, p. ej. {\"#\": 0, \"=\": 4}"),
+                   "columna": n("Columna donde empieza (0)"), "fila": n("Fila donde empieza (0)"),
+                   "agrandar": json!({"type": "boolean", "description": "Agrandar el mapa si las filas no caben (por defecto true)"})}), &["objeto", "filas", "leyenda"]),
         t("instancias_agregar", "Coloca instancias de objetos en una escena.",
             json!({"escena": s("Escena"), "instancias": a("[{obj, x, y, layer?, angle?, z?, w?, h?, vars?}] (x,y = esquina superior izquierda)")}), &["escena", "instancias"]),
         t("instancias_quitar", "Quita instancias de una escena: las de un objeto, o todas.",
@@ -332,6 +338,58 @@ impl Srv {
                 }
                 Ok(format!("Objeto «{name}» borrado con sus instancias. Revisa los eventos que lo usaban."))
             }),
+            "mapa_pintar" => self.edit(a, |p, _| {
+                let name: String = arg(a, "objeto")?;
+                let filas: Vec<String> = arg(a, "filas")?;
+                let leyenda: BTreeMap<String, i32> = arg(a, "leyenda")?;
+                let (c0, r0): (usize, usize) = (opt(a, "columna")?.unwrap_or(0), opt(a, "fila")?.unwrap_or(0));
+                let grow = a["agrandar"].as_bool() != Some(false);
+                let list = match a["escena"].as_str() {
+                    Some(s) => &mut scene_mut(p, s)?.objects,
+                    None => &mut p.objects,
+                };
+                let o = list.iter_mut().find(|o| o.name == name).ok_or(format!("no existe el objeto «{name}»"))?;
+                let Kind::Tilemap { cols, rows, data, .. } = &mut o.kind else {
+                    return Err(format!("«{name}» no es un mapa de baldosas (type=tilemap)"));
+                };
+                let need_c = c0 + filas.iter().map(|f| f.chars().count()).max().unwrap_or(0);
+                let need_r = r0 + filas.len();
+                let (old_c, old_r) = (*cols, *rows);
+                data.resize(old_c * old_r, -1);
+                if grow && (need_c > old_c || need_r > old_r) {
+                    let (nc, nr) = (need_c.max(old_c), need_r.max(old_r));
+                    let mut nd = vec![-1; nc * nr];
+                    for r in 0..old_r {
+                        nd[r * nc..r * nc + old_c].copy_from_slice(&data[r * old_c..(r + 1) * old_c]);
+                    }
+                    (*cols, *rows, *data) = (nc, nr, nd);
+                }
+                let mut unknown = BTreeSet::new();
+                let mut painted = 0;
+                for (dr, f) in filas.iter().enumerate() {
+                    for (dc, ch) in f.chars().enumerate() {
+                        let (c, r) = (c0 + dc, r0 + dr);
+                        if c >= *cols || r >= *rows {
+                            continue;
+                        }
+                        let v = match leyenda.get(&ch.to_string()) {
+                            Some(v) => *v,
+                            None if ch == '.' || ch == ' ' => -1,
+                            None => {
+                                unknown.insert(ch);
+                                continue;
+                            }
+                        };
+                        data[r * *cols + c] = v;
+                        painted += 1;
+                    }
+                }
+                let mut msg = format!("Mapa «{name}» pintado: {painted} celdas; ahora mide {}x{} baldosas.", cols, rows);
+                if !unknown.is_empty() {
+                    msg += &format!(" Caracteres sin leyenda (ignorados): {unknown:?}.");
+                }
+                Ok(msg)
+            }),
             "instancias_agregar" => self.edit(a, |p, _| {
                 let list: Vec<Instance> = arg(a, "instancias")?;
                 let s = scene_mut(p, &arg::<String>(a, "escena")?)?;
@@ -501,6 +559,7 @@ fn resumen(p: &Project, path: &Path) -> String {
             Kind::Sprite { animations, .. } => format!("sprite, animaciones {:?}", animations.iter().map(|a| &a.name).collect::<Vec<_>>()),
             Kind::Text { .. } => "text".into(),
             Kind::Box { .. } => "box".into(),
+            Kind::Tilemap { tileset, cols, rows, tile, .. } => format!("tilemap {cols}x{rows} baldosas de {tile}px, tileset {tileset}"),
         };
         let behs: Vec<String> = o.behaviors.iter().filter_map(|b| serde_json::to_value(b).ok()?.get("type")?.as_str().map(String::from)).collect();
         format!("  - {} ({kind}){}\n", o.name, if behs.is_empty() { String::new() } else { format!(" comportamientos {behs:?}") })
@@ -841,6 +900,9 @@ Capa "" = base. fixed=true no sigue a la cámara (HUD).
   w/h = 0 o ausentes: tamaño de la primera imagen. La primera animación es la inicial.
 - text: { "name", "type": "text", "text": "Puntos: {puntos}", "size": 24, "color": [r,g,b] }   ({expresión} se actualiza sola)
 - box: { "name", "type": "box", "w", "h", "color": [r,g,b] }   (rectángulo de color, ideal para prototipos)
+- tilemap: { "name", "type": "tilemap", "tileset": "img/baldosas.png", "tile": 32, "cols", "rows", "data": [índices, -1 = vacía], "pass": [baldosas que no chocan] }
+  Mapa de baldosas para armar niveles; con el comportamiento platform sus baldosas son suelo. Píntalo con mapa_pintar.
+  El tileset es una imagen con baldosas en grilla (índice 0 arriba a la izquierda, de izquierda a derecha). Expresión tile(Mapa, x, y).
 Todos aceptan "behaviors": [...] y "vars": { "vida": 3 }.
 Instancia: { "obj", "x", "y", "layer"?, "angle"?, "z"?, "w"?, "h"?, "vars"? }  (x,y = esquina superior izquierda; rota alrededor del centro)
 

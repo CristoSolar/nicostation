@@ -41,8 +41,12 @@ pub fn assets(p: &Project) -> BTreeSet<String> {
     }
     let mut out = BTreeSet::new();
     for o in p.objects.iter().chain(p.scenes.iter().flat_map(|s| s.objects.iter())) {
-        if let Kind::Sprite { animations, .. } = &o.kind {
-            out.extend(animations.iter().flat_map(|a| a.frames.iter().cloned()));
+        match &o.kind {
+            Kind::Sprite { animations, .. } => out.extend(animations.iter().flat_map(|a| a.frames.iter().cloned())),
+            Kind::Tilemap { tileset, .. } => {
+                out.insert(tileset.clone());
+            }
+            _ => {}
         }
     }
     for s in &p.scenes {

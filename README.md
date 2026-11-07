@@ -35,8 +35,8 @@ claude mcp add --scope user nicostation -- $PWD/target/release/nicostation-mcp
 ```
 
 Herramientas: `catalogo`, `proyecto_crear`, `proyecto_abrir`, `proyecto_resumen`, `proyecto_json`, `proyecto_configurar`,
-`escena_crear`, `escena_editar`, `escena_borrar`, `objeto_poner`, `objeto_borrar`, `instancias_agregar`, `instancias_quitar`,
-`eventos_poner`, `eventos_ver`, `eventos_borrar`, `funcion_poner`, `imagen_crear`, `sonido_crear`, `validar`, `simular`,
+`escena_crear`, `escena_editar`, `escena_borrar`, `objeto_poner`, `objeto_borrar`, `mapa_pintar`, `instancias_agregar`, `instancias_quitar`,
+`eventos_poner`, `eventos_ver`, `eventos_borrar`, `funcion_poner`, `recetas`, `receta_usar`, `imagen_crear`, `sonido_crear`, `validar`, `simular`,
 `jugar`, `exportar_web`. Cada cambio responde con los problemas de validación que quedan.
 
 ## Piezas
@@ -55,7 +55,8 @@ Herramientas: `catalogo`, `proyecto_crear`, `proyecto_abrir`, `proyecto_resumen`
 
 ## Cómo se arma un juego
 
-- **Objetos**: `sprite` (animaciones con imágenes), `text` (con `{expresión}` que se actualiza sola), `box` (rectángulo de color).
+- **Objetos**: `sprite` (animaciones con imágenes), `text` (con `{expresión}` que se actualiza sola), `box` (rectángulo de color),
+  `tilemap` (mapa de baldosas pintado con un tileset; con `platform`, sus baldosas son suelo y paredes, salvo las de decoración en `pass`).
 - **Comportamientos**: `platformer`, `platform`, `top_down`, `bullet`, `rotate`, `draggable`, `destroy_outside`, `bound_to_layout`, `screen_wrap`.
 - **Plataformas** (como el PlatformerObject de GDevelop): aceleración y frenado, salto sostenido, pendientes
   (una plataforma rotada es una rampa; `slope_max_angle` limita cuánto se sube), escaleras (`ladder`),
