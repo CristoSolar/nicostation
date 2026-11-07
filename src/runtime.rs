@@ -24,6 +24,9 @@ pub enum Cmd {
     PlaySound { file: String, volume: f32 },
     PlayMusic { file: String, volume: f32 },
     StopMusic,
+    StopSound { file: String },
+    /// Hay que guardar la partida: el reproductor escribe estos datos (archivo o localStorage).
+    Persist(Vars),
     Quit,
 }
 
@@ -105,6 +108,8 @@ pub struct World {
     pub dt: f32,
     pub input: Input,
     pub cmds: Vec<Cmd>,
+    /// Partida guardada (la carga el reproductor al empezar; sobrevive a cerrar el juego).
+    pub storage: Vars,
     types: HashMap<String, ObjectDef>,
     timers: HashMap<String, f64>,
     every: HashMap<usize, f64>,
@@ -137,6 +142,7 @@ impl World {
             dt: 0.,
             input: Input::default(),
             cmds: vec![],
+            storage: Vars::new(),
             types: HashMap::new(),
             timers: HashMap::new(),
             every: HashMap::new(),
@@ -284,14 +290,25 @@ impl World {
     }
 
     fn run_events(&mut self, evs: &[Event], sol: &Sol) {
+        // Cadena normal → «si no» → «si no»: ¿ya se cumplió algún eslabón? (None = no hay cadena abierta)
+        let mut chain: Option<bool> = None;
         for e in evs {
             if e.disabled || self.pending.is_some() {
                 continue;
             }
             match e.kind {
                 EventKind::Comment => {}
+                EventKind::Standard => chain = Some(self.run_once(e, sol.clone())),
+                EventKind::Else => {
+                    if chain != Some(true) {
+                        chain = Some(self.run_once(e, sol.clone()));
+                    }
+                }
+                _ => chain = None,
+            }
+            match e.kind {
+                EventKind::Comment | EventKind::Standard | EventKind::Else => {}
                 EventKind::Group => self.run_events(&e.sub, sol),
-                EventKind::Standard => self.run_once(e, sol.clone()),
                 EventKind::Repeat => {
                     let n = self.ev(&e.text, sol, None).num().max(0.) as usize;
                     for _ in 0..n {
@@ -321,11 +338,13 @@ impl World {
         }
     }
 
-    fn run_once(&mut self, e: &Event, mut s: Sol) {
-        if self.conds(&e.conds, &mut s) {
+    fn run_once(&mut self, e: &Event, mut s: Sol) -> bool {
+        let ok = self.conds(&e.conds, &mut s);
+        if ok {
             self.acts(&e.acts, &mut s);
             self.run_events(&e.sub, &s);
         }
+        ok
     }
 
     // ---------- selección ----------
@@ -639,6 +658,16 @@ impl World {
                 self.cmds.push(if c.op == "play_sound" { Cmd::PlaySound { file, volume } } else { Cmd::PlayMusic { file, volume } });
             }
             "stop_music" => self.cmds.push(Cmd::StopMusic),
+            "stop_sound" => self.cmds.push(Cmd::StopSound { file: a(0).into() }),
+            "save_value" | "erase_saved" => {
+                if c.op == "save_value" {
+                    let v = self.ev(a(1), sol, None);
+                    self.storage.insert(a(0).into(), v);
+                } else {
+                    self.storage.remove(a(0));
+                }
+                self.cmds.push(Cmd::Persist(self.storage.clone()));
+            }
             "quit" => self.cmds.push(Cmd::Quit),
             "call" => self.call(c, sol),
             "return" => self.ret = Some(self.ev(a(0), sol, None).truthy()),
@@ -1308,6 +1337,11 @@ impl Ctx for Ev<'_> {
         Some(Value::Num(match name {
             "count" => w.expand(&obj()).iter().map(|o| w.all_of(o).count()).sum::<usize>() as f64,
             "picked" => w.pick(&obj(), self.sol).len() as f64,
+            // saved("clave", por_defecto): valor de la partida guardada
+            "saved" => {
+                let k = args.first().map(|a| expr::eval(a, self).text()).unwrap_or_default();
+                return Some(w.storage.get(&k).cloned().unwrap_or_else(|| args.get(1).map(|a| expr::eval(a, self)).unwrap_or(Value::Num(0.))));
+            }
             // tile(Mapa, x, y): baldosa en esa posición del mundo (-1 = vacía)
             "tile" => {
                 let n = |k: usize| args.get(k).map(|a| expr::eval(a, self).num() as f32).unwrap_or(0.);
@@ -1561,6 +1595,26 @@ mod tests {
             r#"{"obj":"P","x":40,"y":200},{"obj":"M","x":0,"y":0}"#, "");
         correr(&mut w, 2.5, &["Right"]);
         assert!(p(&w).y > 400., "cayó por el hueco: y = {}", p(&w).y);
+    }
+
+    #[test]
+    fn si_no_y_partida_guardada() {
+        let mut w = with(r#"[
+            {"conds":[{"op":"compare","args":["s",">","5"]}],"acts":[{"op":"set_var","args":["r","\"grande\""]}]},
+            {"kind":"else","conds":[{"op":"compare","args":["s",">","2"]}],"acts":[{"op":"set_var","args":["r","\"medio\""]}]},
+            {"kind":"else","acts":[{"op":"set_var","args":["r","\"chico\""]}]},
+            {"conds":[{"op":"start"}],"acts":[{"op":"save_value","args":["record","saved(\"record\", 7) + 1"]}]}
+        ]"#);
+        w.step(0.016, Input::default());
+        assert_eq!(w.vars["r"], Value::Str("chico".into()));
+        assert_eq!(w.storage["record"], Value::Num(8.));
+        assert!(w.cmds.iter().any(|c| matches!(c, Cmd::Persist(v) if v["record"] == Value::Num(8.))));
+        w.vars.insert("s".into(), Value::Num(3.));
+        w.step(0.016, Input::default());
+        assert_eq!(w.vars["r"], Value::Str("medio".into()));
+        w.vars.insert("s".into(), Value::Num(9.));
+        w.step(0.016, Input::default());
+        assert_eq!(w.vars["r"], Value::Str("grande".into()));
     }
 
     #[test]

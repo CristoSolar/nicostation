@@ -96,8 +96,9 @@ enum A {
     Down,
 }
 
-const KINDS: [(EventKind, &str); 6] = [
+const KINDS: [(EventKind, &str); 7] = [
     (EventKind::Standard, "Estándar"),
+    (EventKind::Else, "Si no"),
     (EventKind::Repeat, "Repetir"),
     (EventKind::ForEach, "Para cada objeto"),
     (EventKind::While, "Mientras"),

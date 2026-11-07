@@ -291,6 +291,8 @@ fn d0_2() -> f32 { 0.2 }
 pub enum EventKind {
     #[default]
     Standard,
+    /// «Si no»: se ejecuta solo si el evento anterior (normal o «si no») no se cumplió, y sus condiciones sí.
+    Else,
     /// `text` = cantidad (expresión).
     Repeat,
     /// `text` = objeto; cada iteración elige una sola instancia.

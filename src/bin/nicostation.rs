@@ -197,6 +197,13 @@ async fn game() {
                         stop_sound(&m);
                     }
                 }
+                Cmd::StopSound { file } => {
+                    if let Some(snd) = sounds.get(&file) {
+                        stop_sound(snd);
+                    }
+                }
+                // ponytail: guardado real en el reproductor pendiente (archivo / localStorage)
+                Cmd::Persist(_) => {}
                 Cmd::Quit => return,
             }
         }

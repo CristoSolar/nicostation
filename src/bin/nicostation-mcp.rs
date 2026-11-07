@@ -615,6 +615,7 @@ fn sheet(list: &[Event], prefix: &str, depth: usize, out: &mut String) {
             EventKind::ForEach => format!("{pad}{n}. Para cada {}{off}\n", e.text),
             EventKind::While => format!("{pad}{n}. Mientras{off}\n", ),
             EventKind::Standard => format!("{pad}{n}.{off}\n"),
+            EventKind::Else => format!("{pad}{n}. Si no{off}\n"),
         };
         *out += &head;
         let sub = |i: &Instr| -> String {
@@ -859,6 +860,8 @@ fn simulate(path: &Path, a: &J) -> Result<String, String> {
                 nicostation::runtime::Cmd::PlaySound { file, .. } => format!("sonido {file}"),
                 nicostation::runtime::Cmd::PlayMusic { file, .. } => format!("música {file}"),
                 nicostation::runtime::Cmd::StopMusic => "detener música".into(),
+                nicostation::runtime::Cmd::StopSound { file } => format!("detener {file}"),
+                nicostation::runtime::Cmd::Persist(_) => "guardar partida".into(),
                 nicostation::runtime::Cmd::Quit => {
                     eventos.push(format!("t={t:.2}s: el juego pidió salir"));
                     continue;
@@ -936,8 +939,9 @@ top_down: flechas en 8 direcciones (no choca solo: usa la acción separate contr
 bullet: avanza según su ángulo (grados, 0 = derecha, 90 = abajo). destroy_outside: se borra al salir de la cámara.
 
 ## Eventos
-{ "kind"?: "standard"|"repeat"|"for_each"|"while"|"group"|"comment", "text"?: "...", "conds": [instr], "acts": [instr], "sub": [eventos], "disabled"? }
+{ "kind"?: "standard"|"else"|"repeat"|"for_each"|"while"|"group"|"comment", "text"?: "...", "conds": [instr], "acts": [instr], "sub": [eventos], "disabled"? }
 - standard: si se cumplen TODAS las conds, ejecuta acts y luego sub (cada frame, 60 por segundo).
+- else: «si no»; va justo después de un standard (o de otro else): se ejecuta solo si el anterior no se cumplió y sus conds sí.
 - repeat: text = cantidad (expresión). for_each: text = objeto; cada vuelta elige una instancia. while: repite mientras conds.
 - group: text = título, solo agrupa sub. comment: text = nota.
 Instrucción: { "op": "...", "args": ["...", ...], "not"?: true, "sub"?: [instr] (para or/and) }. TODOS los args son texto.
