@@ -1,10 +1,13 @@
 //! Reproductor: `nicostation proyecto.json`. Ventana, imágenes, sonido y entrada con macroquad.
 //! También compila a WebAssembly: en el navegador lee `juego.json` junto a la página.
 //! Exportar a web: `nicostation --export-web proyecto.json carpeta/`.
+//! Exportar a un solo ejecutable: `nicostation --export-desktop proyecto.json salida [--target windows]`.
+//! Si el ejecutable trae un juego empaquetado (ver `pack.rs`), lo juega sin leer nada de disco.
 
-use macroquad::audio::{load_sound, play_sound, stop_sound, PlaySoundParams, Sound};
+use macroquad::audio::{load_sound_from_bytes, play_sound, stop_sound, PlaySoundParams, Sound};
 use macroquad::prelude::*;
 use nicostation::model::{Kind, Project};
+use nicostation::pack::Pack;
 use nicostation::runtime::{Cmd, Input, World};
 use std::collections::HashMap;
 
@@ -12,15 +15,188 @@ fn project_path() -> String {
     std::env::args().nth(1).unwrap_or("juego.json".into())
 }
 
+/// El juego empaquetado dentro de este ejecutable (se lee una sola vez).
+fn embedded() -> Option<&'static Pack> {
+    static PACK: std::sync::OnceLock<Option<Pack>> = std::sync::OnceLock::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    return PACK.get_or_init(nicostation::pack::read_embedded).as_ref();
+    #[cfg(target_arch = "wasm32")]
+    return PACK.get_or_init(|| None).as_ref();
+}
+
 fn conf() -> Conf {
     let c = Conf { window_title: "NicoStation".into(), window_width: 800, window_height: 600, window_resizable: true, ..Default::default() };
     // En escritorio la ventana toma el tamaño y nombre del juego; en web los define la página.
     #[cfg(not(target_arch = "wasm32"))]
-    let c = match std::fs::read_to_string(project_path()).ok().and_then(|s| serde_json::from_str::<Project>(&s).ok()) {
-        Some(p) => Conf { window_title: p.name, window_width: p.width as i32, window_height: p.height as i32, ..c },
-        None => c,
+    let c = {
+        let src = match embedded() {
+            Some(pk) => Some(pk.project_json().to_vec()),
+            None => std::fs::read(project_path()).ok(),
+        };
+        match src.and_then(|s| serde_json::from_slice::<Project>(&s).ok()) {
+            Some(p) => Conf { window_title: p.name, window_width: p.width as i32, window_height: p.height as i32, ..c },
+            None => c,
+        }
     };
     c
+}
+
+/// Partida guardada: archivo JSON en escritorio, localStorage en el navegador.
+mod guardado {
+    use nicostation::model::Vars;
+
+    /// Nombre del juego apto para carpeta o clave: minúsculas, sin acentos, guiones.
+    pub fn slug(name: &str) -> String {
+        let mut s = String::new();
+        for c in name.chars().flat_map(char::to_lowercase) {
+            let c = match c {
+                'á' | 'à' | 'ä' | 'â' | 'ã' => 'a',
+                'é' | 'è' | 'ë' | 'ê' => 'e',
+                'í' | 'ì' | 'ï' | 'î' => 'i',
+                'ó' | 'ò' | 'ö' | 'ô' | 'õ' => 'o',
+                'ú' | 'ù' | 'ü' | 'û' => 'u',
+                'ñ' => 'n',
+                'ç' => 'c',
+                c => c,
+            };
+            if c.is_ascii_alphanumeric() {
+                s.push(c);
+            } else if !s.is_empty() && !s.ends_with('-') {
+                s.push('-');
+            }
+        }
+        let s = s.trim_end_matches('-');
+        if s.is_empty() { "juego".into() } else { s.chars().take(64).collect() }
+    }
+
+    /// Carpeta de datos del usuario, a partir de las variables de entorno.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn data_dir(env: impl Fn(&str) -> Option<String>) -> Option<std::path::PathBuf> {
+        let env = |k: &str| env(k).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+        if cfg!(windows) {
+            env("APPDATA")
+        } else if cfg!(target_os = "macos") {
+            env("HOME").map(|h| h.join("Library/Application Support"))
+        } else {
+            env("XDG_DATA_HOME").filter(|p| p.is_absolute()).or_else(|| env("HOME").map(|h| h.join(".local/share")))
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn save_file(data_dir: &std::path::Path, game: &str) -> std::path::PathBuf {
+        data_dir.join("nicostation").join(slug(game)).join("guardado.json")
+    }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn read(file: &std::path::Path) -> Vars {
+        match std::fs::read(file) {
+            Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
+                eprintln!("partida guardada dañada ({}): {e}; se empieza de cero", file.display());
+                Vars::new()
+            }),
+            Err(_) => Vars::new(),
+        }
+    }
+
+    /// Escribe a un temporal y lo renombra: si se corta la luz, queda la partida anterior entera.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn write(file: &std::path::Path, v: &Vars) -> std::io::Result<()> {
+        if let Some(d) = file.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        let tmp = file.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(v)?)?;
+        std::fs::rename(&tmp, file)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_file(game: &str) -> Option<std::path::PathBuf> {
+        data_dir(|k| std::env::var(k).ok()).map(|d| save_file(&d, game))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load(game: &str) -> Vars {
+        native_file(game).map(|f| read(&f)).unwrap_or_default()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn store(game: &str, v: &Vars) {
+        let Some(f) = native_file(game) else { return eprintln!("no sé dónde guardar la partida (falta HOME)") };
+        if let Err(e) = write(&f, v) {
+            eprintln!("no pude guardar la partida en {}: {e}", f.display());
+        }
+    }
+
+    // En el navegador: funciones del plugin «nicostation_storage» de mq_js_bundle.js.
+    #[cfg(target_arch = "wasm32")]
+    #[link(wasm_import_module = "env")]
+    extern "C" {
+        fn nicostation_storage_get(key: *const u8, key_len: u32) -> i32;
+        fn nicostation_storage_take(buf: *mut u8);
+        fn nicostation_storage_set(key: *const u8, key_len: u32, val: *const u8, val_len: u32);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn key(game: &str) -> String {
+        format!("nicostation:{}", slug(game))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn load(game: &str) -> Vars {
+        let k = key(game);
+        // El largo en bytes del valor guardado (≤ 0 si no hay nada o falta el plugin), y después se copia.
+        let n = unsafe { nicostation_storage_get(k.as_ptr(), k.len() as u32) };
+        if n <= 0 {
+            return Vars::new();
+        }
+        let mut buf = vec![0u8; n as usize];
+        unsafe { nicostation_storage_take(buf.as_mut_ptr()) };
+        serde_json::from_slice(&buf).unwrap_or_default()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn store(game: &str, v: &Vars) {
+        let (k, s) = (key(game), serde_json::to_string(v).unwrap_or_default());
+        unsafe { nicostation_storage_set(k.as_ptr(), k.len() as u32, s.as_ptr(), s.len() as u32) };
+    }
+}
+
+/// De dónde salen los archivos del juego: del paquete pegado al ejecutable o de la carpeta / el servidor.
+async fn read_file(path: &str) -> Result<Vec<u8>, String> {
+    match embedded() {
+        Some(pk) => pk.files.get(path).cloned().ok_or_else(|| "no está en el paquete".into()),
+        None => load_file(path).await.map_err(|e| e.to_string()),
+    }
+}
+
+async fn read_texture(path: &str) -> Result<Texture2D, String> {
+    let b = read_file(path).await?;
+    let t = Texture2D::from_file_with_format(&b, None);
+    t.set_filter(FilterMode::Nearest);
+    Ok(t)
+}
+
+async fn read_sound(path: &str) -> Result<Sound, String> {
+    let b = read_file(path).await?;
+    load_sound_from_bytes(&b).await.map_err(|e| e.to_string())
+}
+
+/// Pantalla de carga «Cargando… n/m». Solo dibuja de vez en cuando para no frenar la carga.
+async fn loading(n: usize, m: usize, last: &mut f64) {
+    if n != 0 && get_time() - *last < 0.05 {
+        return;
+    }
+    *last = get_time();
+    let (sw, sh) = (screen_width(), screen_height());
+    clear_background(Color::from_rgba(12, 12, 14, 255));
+    let (w, h) = ((sw * 0.5).clamp(160., 480.), 10.);
+    let (x, y) = ((sw - w) / 2., sh / 2.);
+    draw_rectangle(x, y, w, h, Color::new(1., 1., 1., 0.15));
+    draw_rectangle(x, y, w * n as f32 / m.max(1) as f32, h, Color::new(1., 1., 1., 0.85));
+    let t = format!("Cargando… {n}/{m}");
+    let tw = measure_text(&t, None, 24, 1.).width;
+    draw_text(&t, (sw - tw) / 2., y - 16., 24., Color::new(1., 1., 1., 0.85));
+    next_frame().await
 }
 
 /// Botones táctiles: (centro, radio, tecla). Cruceta de 4 direcciones o izquierda/derecha, más el botón de acción.
@@ -63,9 +239,41 @@ fn key_name(k: KeyCode) -> String {
 
 fn main() {
     let conf = conf(); // antes de cambiar de carpeta: lee el proyecto con la ruta original
+    // Un juego empaquetado no recibe opciones ni cambia de carpeta: todo está adentro.
     #[cfg(not(target_arch = "wasm32"))]
-    {
+    if embedded().is_none() {
         let a: Vec<String> = std::env::args().collect();
+        if a.get(1).map(String::as_str) == Some("--export-desktop") {
+            let mut target = nicostation::export::DesktopTarget::Current;
+            let mut rest = vec![];
+            let mut it = a[2..].iter();
+            while let Some(x) = it.next() {
+                if x == "--target" {
+                    match it.next().map(|t| nicostation::export::DesktopTarget::parse(t)) {
+                        Some(Ok(t)) => target = t,
+                        Some(Err(e)) => {
+                            eprintln!("{e}");
+                            std::process::exit(2);
+                        }
+                        None => rest.push(x),
+                    }
+                } else {
+                    rest.push(x);
+                }
+            }
+            let [p, out] = rest[..] else {
+                eprintln!("uso: nicostation --export-desktop proyecto.json salida [--target windows]");
+                std::process::exit(2);
+            };
+            match nicostation::export::export_desktop(p.as_ref(), out.as_ref(), target) {
+                Ok((f, files)) => println!("Exportado a {} ({} archivos adentro). Es un solo ejecutable: cópialo y listo.", f.display(), files.len()),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
         if a.get(1).map(String::as_str) == Some("--export-web") {
             let (Some(p), Some(out)) = (a.get(2), a.get(3)) else {
                 eprintln!("uso: nicostation --export-web proyecto.json carpeta/");
@@ -89,38 +297,54 @@ fn main() {
 }
 
 async fn game() {
-    // Ya estamos en la carpeta del proyecto: basta el nombre del archivo.
-    let file = std::path::Path::new(&project_path()).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or("juego.json".into());
-    let src = load_string(&file).await.unwrap_or_else(|e| panic!("no pude leer {file}: {e}"));
-    let mut project: Project = serde_json::from_str(&src).unwrap_or_else(|e| panic!("{file}: {e}"));
-
-    // Imágenes de todas las animaciones; los sprites sin tamaño toman el de su primera imagen.
-    let mut tex: HashMap<String, Texture2D> = HashMap::new();
-    let defs = project.objects.iter_mut().chain(project.scenes.iter_mut().flat_map(|s| s.objects.iter_mut()));
-    for o in defs {
-        if let Kind::Tilemap { tileset, .. } = &o.kind {
-            if !tex.contains_key(tileset) {
-                match load_texture(tileset).await {
-                    Ok(t) => {
-                        t.set_filter(FilterMode::Nearest);
-                        tex.insert(tileset.clone(), t);
-                    }
-                    Err(e) => eprintln!("imagen {tileset}: {e}"),
-                }
-            }
+    let (file, src) = match embedded() {
+        Some(pk) => (pk.project.clone(), pk.project_json().to_vec()),
+        None => {
+            // Ya estamos en la carpeta del proyecto: basta el nombre del archivo.
+            let file = std::path::Path::new(&project_path()).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or("juego.json".into());
+            let src = load_file(&file).await.unwrap_or_else(|e| panic!("no pude leer {file}: {e}"));
+            (file, src)
         }
-        if let Kind::Sprite { w, h, animations } = &mut o.kind {
-            for f in animations.iter().flat_map(|a| a.frames.iter()) {
-                if !tex.contains_key(f) {
-                    match load_texture(f).await {
-                        Ok(t) => {
-                            t.set_filter(FilterMode::Nearest);
-                            tex.insert(f.clone(), t);
-                        }
-                        Err(e) => eprintln!("imagen {f}: {e}"),
-                    }
-                }
+    };
+    let mut project: Project = serde_json::from_slice(&src).unwrap_or_else(|e| panic!("{file}: {e}"));
+
+    // Imágenes de objetos y sonidos de los eventos, con pantalla de carga.
+    let mut images: Vec<String> = vec![];
+    for o in project.objects.iter().chain(project.scenes.iter().flat_map(|s| s.objects.iter())) {
+        match &o.kind {
+            Kind::Tilemap { tileset, .. } => images.push(tileset.clone()),
+            Kind::Sprite { animations, .. } => images.extend(animations.iter().flat_map(|a| a.frames.iter().cloned())),
+            _ => {}
+        }
+    }
+    images.sort();
+    images.dedup();
+    let audio: Vec<String> = nicostation::export::assets(&project).into_iter().filter(|a| images.binary_search(a).is_err()).collect();
+    let total = images.len() + audio.len();
+    let mut last = 0.;
+    let mut tex: HashMap<String, Texture2D> = HashMap::new();
+    for (n, f) in images.iter().enumerate() {
+        loading(n, total, &mut last).await;
+        match read_texture(f).await {
+            Ok(t) => {
+                tex.insert(f.clone(), t);
             }
+            Err(e) => eprintln!("imagen {f}: {e}"),
+        }
+    }
+    let mut sounds: HashMap<String, Sound> = HashMap::new();
+    for (n, f) in audio.iter().enumerate() {
+        loading(images.len() + n, total, &mut last).await;
+        match read_sound(f).await {
+            Ok(s) => {
+                sounds.insert(f.clone(), s);
+            }
+            Err(e) => eprintln!("sonido {f}: {e}"),
+        }
+    }
+    // Los sprites sin tamaño toman el de su primera imagen.
+    for o in project.objects.iter_mut().chain(project.scenes.iter_mut().flat_map(|s| s.objects.iter_mut())) {
+        if let Kind::Sprite { w, h, animations } = &mut o.kind {
             if let Some(t) = animations.first().and_then(|a| a.frames.first()).and_then(|f| tex.get(f)) {
                 if *w == 0. { *w = t.width() }
                 if *h == 0. { *h = t.height() }
@@ -134,8 +358,10 @@ async fn game() {
     // NICOSTATION_TACTIL=1 muestra los botones desde el inicio (para probar sin pantalla táctil).
     let mut touch_seen = cfg!(not(target_arch = "wasm32")) && std::env::var_os("NICOSTATION_TACTIL").is_some();
     let mut touch_prev: std::collections::HashSet<&str> = Default::default();
+    let game_name = project.name.clone();
     let mut world = World::new(project);
-    let mut sounds: HashMap<String, Sound> = HashMap::new();
+    // La partida guardada tiene que estar antes del primer paso (los eventos «al empezar» la leen).
+    world.storage = guardado::load(&game_name);
     let mut music: Option<Sound> = None;
 
     loop {
@@ -171,7 +397,7 @@ async fn game() {
         for cmd in std::mem::take(&mut world.cmds) {
             if let Cmd::PlaySound { file, .. } | Cmd::PlayMusic { file, .. } = &cmd {
                 if !sounds.contains_key(file) {
-                    match load_sound(file).await {
+                    match read_sound(file).await {
                         Ok(snd) => {
                             sounds.insert(file.clone(), snd);
                         }
@@ -202,8 +428,7 @@ async fn game() {
                         stop_sound(snd);
                     }
                 }
-                // ponytail: guardado real en el reproductor pendiente (archivo / localStorage)
-                Cmd::Persist(_) => {}
+                Cmd::Persist(v) => guardado::store(&game_name, &v),
                 Cmd::Quit => return,
             }
         }
@@ -295,6 +520,53 @@ async fn game() {
 
 #[cfg(test)]
 mod tests {
+    use super::guardado;
+
+    #[test]
+    fn slug_del_juego() {
+        assert_eq!(guardado::slug("Naves del Espacio"), "naves-del-espacio");
+        assert_eq!(guardado::slug("  ¡Pingüino Ñandú! 2 "), "pinguino-nandu-2");
+        assert_eq!(guardado::slug("../../etc"), "etc");
+        assert_eq!(guardado::slug("???"), "juego");
+        assert_eq!(guardado::slug(""), "juego");
+    }
+
+    #[test]
+    fn carpeta_de_datos() {
+        let env = |vars: &'static [(&'static str, &'static str)]| move |k: &str| vars.iter().find(|v| v.0 == k).map(|v| v.1.to_string());
+        let p = std::path::PathBuf::from;
+        if cfg!(windows) {
+            assert_eq!(guardado::data_dir(env(&[("APPDATA", "C:\\U\\AppData\\Roaming")])), Some(p("C:\\U\\AppData\\Roaming")));
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(guardado::data_dir(env(&[("XDG_DATA_HOME", "/x/data"), ("HOME", "/h")])), Some(p("/x/data")));
+            assert_eq!(guardado::data_dir(env(&[("XDG_DATA_HOME", ""), ("HOME", "/h")])), Some(p("/h/.local/share")));
+            assert_eq!(guardado::data_dir(env(&[("XDG_DATA_HOME", "relativo"), ("HOME", "/h")])), Some(p("/h/.local/share")));
+            assert_eq!(guardado::data_dir(env(&[])), None);
+            assert_eq!(guardado::save_file(&p("/x/data"), "Mi Juego"), p("/x/data/nicostation/mi-juego/guardado.json"));
+        }
+    }
+
+    #[test]
+    fn guardar_y_leer() {
+        use nicostation::model::Value;
+        let d = std::env::temp_dir().join(format!("nicoguardado-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let f = guardado::save_file(&d, "Prueba");
+        assert!(guardado::read(&f).is_empty(), "sin partida: vacío");
+        let mut v = nicostation::model::Vars::new();
+        v.insert("record".into(), Value::Num(12.));
+        v.insert("nombre".into(), Value::Str("Ana".into()));
+        guardado::write(&f, &v).unwrap();
+        assert_eq!(guardado::read(&f), v);
+        v.insert("record".into(), Value::Num(13.));
+        guardado::write(&f, &v).unwrap();
+        assert_eq!(guardado::read(&f), v);
+        assert!(!f.with_extension("json.tmp").exists(), "no queda el temporal");
+        std::fs::write(&f, "{dañado").unwrap();
+        assert!(guardado::read(&f).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn botones_tactiles_dentro_de_pantalla() {
         for (w, h) in [(800., 600.), (390., 844.), (1920., 1080.)] {

@@ -4,6 +4,7 @@ pub mod export;
 pub mod expr;
 pub mod misiones;
 pub mod model;
+pub mod pack;
 pub mod plantillas;
 pub mod recetas;
 pub mod runtime;

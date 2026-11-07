@@ -23,6 +23,40 @@ python3 -m http.server -d web 8000   # abrir http://localhost:8000
 La carpeta `web/` queda lista para subir a cualquier hosting estático (itch.io, GitHub Pages, Netlify).
 El editor también exporta desde su botón "Exportar web".
 
+### Exportar a escritorio (un solo ejecutable)
+
+El juego sale como **un único archivo** (sin json, imágenes ni sonidos sueltos), como las exportaciones de GameMaker:
+el reproductor con el proyecto y sus archivos pegados al final (formato en `src/pack.rs`).
+
+```
+cargo build --release --bin nicostation
+./target/release/nicostation --export-desktop examples/plataformas/juego.json mi-juego
+./mi-juego        # funciona desde cualquier carpeta; se puede copiar a otra computadora con el mismo sistema
+```
+
+Para **Windows** (`mi-juego.exe`) hace falta, una sola vez, el reproductor compilado para Windows:
+
+```
+rustup target add x86_64-pc-windows-gnu
+sudo pacman -S mingw-w64-gcc          # Arch/Omarchy (Debian/Ubuntu: sudo apt install mingw-w64)
+cargo build --release --target x86_64-pc-windows-gnu --bin nicostation
+./target/release/nicostation --export-desktop examples/plataformas/juego.json mi-juego --target windows
+```
+
+También se puede indicar el reproductor con `NICOSTATION_PLAYER_WINDOWS=/ruta/nicostation.exe`.
+Desde código: `nicostation::export::export_desktop(proyecto, salida, DesktopTarget::Current | Windows)`.
+
+### Partida guardada
+
+Lo que el juego guarda con «Guardar en la partida» (`save_value`, se lee con `saved("nombre", 0)`) queda guardado al cerrar:
+
+- Linux: `~/.local/share/nicostation/<nombre-del-juego>/guardado.json` (o `$XDG_DATA_HOME/...`)
+- Windows: `%APPDATA%\nicostation\<nombre-del-juego>\guardado.json`; macOS: `~/Library/Application Support/nicostation/...`
+- Web: `localStorage` del navegador, clave `nicostation:<nombre-del-juego>`
+
+`<nombre-del-juego>` es el nombre del proyecto en minúsculas, sin acentos y con guiones («Lluvia de asteroides» → `lluvia-de-asteroides`).
+Si cambias el nombre del juego, empieza con una partida nueva.
+
 ### Conector MCP (para agentes)
 
 `nicostation-mcp` es un servidor MCP por stdio con el que un agente crea un juego completo: proyecto, escenas,
@@ -47,7 +81,8 @@ Herramientas: `catalogo`, `proyecto_crear`, `proyecto_abrir`, `proyecto_resumen`
 | `src/catalog.rs` | Lista de condiciones y acciones con su frase y tipo de parámetros (el editor se arma con esto) |
 | `src/expr.rs` | Expresiones: `Heroe.x + 10`, `"Puntos: " + puntos`, `random(0, 5)`, `count(Moneda)` |
 | `src/runtime.rs` | Motor sin ventana: selección de objetos, eventos, comportamientos, colisiones (SAT) |
-| `src/export.rs` | Exportación web: wasm + página + archivos del juego |
+| `src/export.rs` | Exportación web (wasm + página + archivos) y a escritorio (un solo ejecutable) |
+| `src/pack.rs` | Paquete pegado al final del reproductor: el juego entero en un ejecutable |
 | `src/validate.rs` | Revisa un proyecto sin ejecutarlo: referencias, instrucciones, expresiones, archivos |
 | `src/bin/nicostation-mcp.rs` | Conector MCP para agentes |
 | `src/bin/nicostation.rs` | Reproductor (macroquad): imágenes, sonido, teclado y mouse |
@@ -78,4 +113,4 @@ estudiado desde su código fuente público. NicoStation es una implementación n
 El análisis está en `docs/`.
 
 Fuentes incluidas en `assets/fonts/`: Geist (SIL Open Font License) e iconos Phosphor (MIT); licencias junto a cada archivo.
-`assets/web/mq_js_bundle.js` viene de macroquad (MIT/Apache-2.0), con el arreglo descrito en `assets/web/README.md`.
+`assets/web/mq_js_bundle.js` viene de macroquad (MIT/Apache-2.0), con el arreglo y el agregado descritos en `assets/web/README.md`.
