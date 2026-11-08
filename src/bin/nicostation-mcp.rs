@@ -3,6 +3,7 @@
 //! Registro: `claude mcp add nicostation -- /ruta/nicostation-mcp`.
 
 use nicostation::model::*;
+use nicostation::nodos::Graph;
 use nicostation::runtime::{Input, World};
 use nicostation::{catalog, export, validate};
 use serde::de::DeserializeOwned;
@@ -121,6 +122,11 @@ fn tools() -> Vec<J> {
         t("eventos_poner", "Agrega eventos a la hoja de una escena o función (o la reemplaza).", ev_props, &["eventos"]),
         t("eventos_ver", "Muestra la hoja de eventos numerada y en lenguaje natural.", target, &[]),
         t("eventos_borrar", "Borra un evento (con sus sub-eventos) por su número.", ev_del, &["ruta"]),
+        t("grafo_poner", "Crea o reemplaza (por nombre) un grafo de nodos en una escena, o el grafo de una función. Formato en catalogo (sección Grafos). Devuelve los eventos que genera.",
+            json!({"escena": s("Escena"), "funcion": s("Función (en vez de escena)"), "grafo": o("{name, nodes: [...], flow: [...], wires: [...]}"),
+                   "desde_hoja": json!({"type": "boolean", "description": "En vez de «grafo», convertir la hoja de eventos actual en un grafo (la hoja queda vacía)"})}), &[]),
+        t("grafo_ver", "Muestra un grafo de nodos (nodos, flechas y cables) y lo que compila: eventos generados o errores por nodo.",
+            json!({"escena": s("Escena"), "funcion": s("Función (en vez de escena)"), "nombre": s("Nombre del grafo (omitir = todos los de la escena)")}), &[]),
         t("recetas", "Lista de recetas: trozos de juego listos (moverse con flechas, recoger y sumar puntos, perder al tocar un enemigo, disparar...) con los huecos que piden.", json!({}), &[]),
         t("receta_usar", "Agrega a una escena los eventos de una receta, completando sus huecos en orden. Crea las variables que la receta necesita.",
             json!({"escena": s("Escena"), "receta": s("Nombre exacto de la receta"), "respuestas": a("Respuestas a los huecos, en orden (nombres de objetos, escena, tecla o números)")}), &["escena", "receta"]),
@@ -440,6 +446,42 @@ impl Srv {
                 sheet(list, "", 0, &mut out);
                 Ok(if out.is_empty() { "La hoja está vacía.".into() } else { out })
             }
+            "grafo_poner" => self.edit(a, |p, _| {
+                let desde = a["desde_hoja"].as_bool() == Some(true);
+                let mut g: Option<Graph> = opt(a, "grafo")?;
+                let list = events_mut(p, a)?;
+                if desde {
+                    let name = g.as_ref().map_or("Hoja convertida".to_string(), |g| g.name.clone());
+                    g = Some(nicostation::nodos::from_events(&name, list));
+                    list.clear();
+                }
+                let g = g.ok_or("falta «grafo» (o desde_hoja=true)")?;
+                let res = grafo_texto(&g, false);
+                let name = g.name.clone();
+                match a["funcion"].as_str() {
+                    Some(f) => p.functions.iter_mut().find(|x| x.name == f).ok_or(format!("no existe la función «{f}»"))?.graph = Some(g),
+                    None => {
+                        let s = scene_mut(p, a["escena"].as_str().ok_or("indica «escena» o «funcion»")?)?;
+                        match s.graphs.iter_mut().find(|x| x.name == name) {
+                            Some(old) => *old = g,
+                            None => s.graphs.push(g),
+                        }
+                    }
+                }
+                Ok(format!("Grafo «{name}» puesto.\n{res}"))
+            }),
+            "grafo_ver" => {
+                let p = load(&self.path(a)?)?;
+                let gs: Vec<&Graph> = match a["funcion"].as_str() {
+                    Some(f) => p.functions.iter().find(|x| x.name == f).ok_or(format!("no existe la función «{f}»"))?.graph.iter().collect(),
+                    None => {
+                        let name = a["escena"].as_str().ok_or("indica «escena» o «funcion»")?;
+                        let s = p.scene(name).ok_or(format!("no existe la escena «{name}»"))?;
+                        s.graphs.iter().filter(|g| a["nombre"].as_str().is_none_or(|n| n == g.name)).collect()
+                    }
+                };
+                Ok(if gs.is_empty() { "No hay grafos ahí.".into() } else { gs.iter().map(|g| grafo_texto(g, true)).collect::<Vec<_>>().join("\n") })
+            }
             "eventos_borrar" => self.edit(a, |p, _| {
                 let ruta: String = arg(a, "ruta")?;
                 let idx: Vec<usize> = ruta.split('.').map(|x| x.trim().parse::<usize>().ok().filter(|&n| n > 0).map(|n| n - 1)).collect::<Option<_>>().ok_or("ruta inválida, usa p. ej. \"2.1\"")?;
@@ -600,6 +642,22 @@ fn resumen(p: &Project, path: &Path) -> String {
     for f in &p.functions {
         s += &format!("\nFunción {}({}) {}\n", f.name, f.params.join(", "), if f.is_condition { "[condición]" } else { "[acción]" });
     }
+    s
+}
+
+/// Texto de un grafo (si `nodos`) y lo que compila.
+fn grafo_texto(g: &Graph, nodos: bool) -> String {
+    let mut s = if nodos { nicostation::nodos::dump(g) } else { String::new() };
+    let c = nicostation::nodos::compile_mapped(g);
+    if c.errors.is_empty() {
+        s += &format!("Compila: {} eventos de primer nivel.\n", c.events.len());
+    } else {
+        s += &format!("{} errores (los eventos con errores no se ejecutan):\n", c.errors.len());
+        for e in &c.errors {
+            s += &format!("- {}{}\n", e.node.map_or(String::new(), |n| format!("nodo {n}: ")), e.msg);
+        }
+    }
+    sheet(&c.events, "", 0, &mut s);
     s
 }
 
@@ -993,6 +1051,22 @@ Propiedades conocidas: {:?}
 {}
 "#, catalog::OPS, catalog::PROPS, catalog::KEYS.join(" "));
     s += r#"
+## Grafos (nodos, como Blueprints)
+Otra forma de escribir la lógica: escena.graphs = [grafo] (y función.graph). Se compilan a eventos que van después de la hoja.
+{ "name": "...", "nodes": [nodo], "flow": [{"from": id, "out": 0, "to": id}], "wires": [{"from": id, "to": id, "arg": k}] }
+Nodo: { "id": n, "k": tipo, "x": px, "y": px, "args": ["..."], "not"?: true, "sub"?: [instr] (or/and), "off"?: true }
+- "event" + "op": condición que dispara (start, every, key_pressed, key_down, collides, mouse_clicked, alarm, timer...); "op": "" = cada cuadro.
+- "cond" + "op": «Si» con salidas out 0 = sí, out 1 = no (el «no» se compila como evento else). "act" + "op": acción.
+- "seq" + "n": salidas 0..n-1 en orden. "repeat" (args[0] = veces; out 0 = cada vez, out 1 = al terminar),
+  "for_each" (args[0] = objeto), "while" (out 0 empieza con los «Si» que se repiten). "comment" + "w","h" (args[0] = texto).
+- "data" + "f": nodo de datos puro con una salida que va por "wires" al parámetro "arg" de otro nodo (se compila a la expresión):
+  num text bool obj var global prop count dt time mousex mousey expr add sub mul div mod min max abs round random randint clamp lerp
+  sin cos sqrt distance angle eq ne lt le gt ge and or not if join len upper lower str tonum. Sus entradas sin cable usan sus args.
+Los args de event/cond/act son los del catálogo; un cable a un parámetro reemplaza a lo escrito. Orden de los eventos: por "y", luego "x".
+Ejemplo: {"name":"Mover","nodes":[{"id":1,"k":"event","op":"key_down","args":["Right"]},{"id":2,"k":"act","op":"add","args":["Heroe","x",""]},
+ {"id":3,"k":"data","f":"mul","args":["200","1"]},{"id":4,"k":"data","f":"dt"}],"flow":[{"from":1,"to":2}],
+ "wires":[{"from":3,"to":2,"arg":2},{"from":4,"to":3,"arg":1}]}  →  si tecla Right: sumar 200 * dt a x de Heroe.
+
 ## Ejemplo mínimo de evento
 { "conds": [{ "op": "collides", "args": ["Heroe", "Moneda"] }],
   "acts": [{ "op": "delete", "args": ["Moneda"] }, { "op": "add_var", "args": ["puntos", "1"] },

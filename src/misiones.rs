@@ -46,14 +46,15 @@ fn scene_var(p: &Project, name: &str) -> f64 {
     p.scenes.iter().find_map(|s| s.vars.get(name)).map(Value::num).unwrap_or(0.)
 }
 
-/// Todas las instrucciones del proyecto, con las condiciones de su evento.
-fn all_events(p: &Project) -> Vec<&Event> {
-    fn walk<'a>(l: &'a [Event], out: &mut Vec<&'a Event>) {
+/// Todos los eventos del proyecto, incluidos los que salen de los grafos de nodos.
+fn all_events(p: &Project) -> Vec<Event> {
+    fn walk(l: &[Event], out: &mut Vec<Event>) {
         for e in l {
-            out.push(e);
+            out.push(e.clone());
             walk(&e.sub, out);
         }
     }
+    let p = p.compiled();
     let mut out = vec![];
     for s in &p.scenes {
         walk(&s.events, &mut out);

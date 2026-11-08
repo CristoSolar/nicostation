@@ -75,6 +75,9 @@ pub struct Scene {
     pub vars: Vars,
     #[serde(default)]
     pub events: Vec<Event>,
+    /// Lógica en nodos (ver `nodos.rs`); se compila a eventos que van después de `events`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graphs: Vec<crate::nodos::Graph>,
 }
 
 fn default_layers() -> Vec<Layer> {
@@ -325,7 +328,7 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
 }
 
 /// Condición o acción: `op` del catálogo (ver `catalog.rs`) + argumentos como texto.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Instr {
     pub op: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -354,6 +357,9 @@ pub struct Function {
     #[serde(default)]
     pub params: Vec<String>,
     pub events: Vec<Event>,
+    /// Lógica en nodos; se compila y se agrega después de `events`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<crate::nodos::Graph>,
 }
 
 impl Project {

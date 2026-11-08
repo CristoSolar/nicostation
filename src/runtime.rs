@@ -192,6 +192,8 @@ pub struct World {
 
 impl World {
     pub fn new(project: Project) -> Self {
+        // Los grafos de nodos se compilan a eventos: el resto del motor solo ve eventos.
+        let project = project.compiled();
         let first = project.first_scene.clone();
         let mut w = World {
             globals: project.globals.clone(),

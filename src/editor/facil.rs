@@ -47,11 +47,11 @@ pub fn cat(group: &str) -> &'static Cat {
     CATS.iter().find(|c| c.groups.contains(&group)).unwrap_or(&CATS[8])
 }
 
-fn cat_op(op: &str) -> &'static Cat {
+pub fn cat_op(op: &str) -> &'static Cat {
     catalog::meta(op).map_or(&CATS[8], |m| cat(m.group))
 }
 
-fn op_icon(op: &str) -> &'static str {
+pub fn op_icon(op: &str) -> &'static str {
     match op {
         "start" => ic::FLAG,
         "trigger_once" => ic::LIGHTNING,
@@ -95,7 +95,7 @@ fn es_si_no(op: &str, k: usize) -> bool {
 }
 
 /// Pregunta amable para cada parámetro.
-fn pregunta(op: &str, k: usize, name: &str, t: P) -> String {
+pub fn pregunta(op: &str, k: usize, name: &str, t: P) -> String {
     if es_si_no(op, k) {
         return if op == "return" { "¿Qué responde?".into() } else { "¿Lo das vuelta?".into() };
     }
@@ -396,7 +396,7 @@ pub fn pill_at(ui: &mut Ui, text: &str, st: &Pill, sense: Sense, id: Option<egui
 }
 
 /// Texto y tipo de ficha para un argumento ya completado.
-fn ficha(op: &str, k: usize, t: P, v: &str, l: &Lists) -> (String, Ficha, Option<String>) {
+pub fn ficha(op: &str, k: usize, t: P, v: &str, l: &Lists) -> (String, Ficha, Option<String>) {
     if v.is_empty() && t != P::Layer {
         return ("elegir".into(), Ficha::Vacia, Some("Falta completar esto. Haz clic para elegir.".into()));
     }
@@ -533,7 +533,7 @@ pub struct ArgCx<'a> {
     pub cond: bool,
 }
 
-fn titulo(ui: &mut Ui, t: &str) {
+pub fn titulo(ui: &mut Ui, t: &str) {
     ui.label(RichText::new(t).font(sb(16.)).color(TEXT));
 }
 
@@ -995,7 +995,7 @@ pub fn editor(ui: &mut Ui, t: P, v: &mut String, cx: &ArgCx, new_var: &mut Optio
 }
 
 /// Opciones discretas: al elegir se cierra la ventanita.
-fn cierra(t: P) -> bool {
+pub fn cierra(t: P) -> bool {
     matches!(t, P::Object | P::Key | P::Mouse | P::Op | P::Ease | P::Scene | P::Layer | P::Anim | P::File | P::Func)
 }
 
@@ -1139,7 +1139,7 @@ fn bloque(ui: &mut Ui, ins: &mut Instr, ev: &[usize], cond: bool, ip: &[usize], 
 }
 
 /// Ajusta los ingredientes de `call` al bloque elegido.
-fn ajustar_func(args: &mut Vec<String>, l: &Lists) {
+pub fn ajustar_func(args: &mut Vec<String>, l: &Lists) {
     if let Some(f) = l.funcs.iter().find(|f| Some(&f.0) == args.first()) {
         args.resize(1 + f.2.len(), "0".into());
     }

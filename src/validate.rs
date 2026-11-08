@@ -1,6 +1,7 @@
 //! Revisa un proyecto sin ejecutarlo: referencias rotas, instrucciones mal formadas, expresiones con error y archivos faltantes.
 
 use crate::catalog::{self, P};
+use crate::nodos;
 use crate::model::*;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -66,13 +67,85 @@ pub fn validate(p: &Project, base: Option<&Path>) -> Vec<String> {
         }
         let ctx = Ctx { p, objs: &objs, groups: s.groups.keys().map(String::as_str).collect(), layers: &layers, file_ok: &file_ok };
         events(&ctx, &s.events, &here, "", &mut out);
+        let mut names = BTreeSet::new();
+        for g in &s.graphs {
+            if !names.insert(g.name.as_str()) {
+                out.push(format!("{here}: hay dos grafos llamados «{}»", g.name));
+            }
+            graph_lines(&ctx, g, &here, &mut out);
+        }
     }
     for f in &p.functions {
         let objs: Vec<&ObjectDef> = all_objects.clone();
         let ctx = Ctx { p, objs: &objs, groups: p.scenes.iter().flat_map(|s| s.groups.keys().map(String::as_str)).collect(), layers: &[], file_ok: &file_ok };
-        events(&ctx, &f.events, &format!("Función «{}»", f.name), "", &mut out);
+        let here = format!("Función «{}»", f.name);
+        events(&ctx, &f.events, &here, "", &mut out);
+        if let Some(g) = &f.graph {
+            graph_lines(&ctx, g, &here, &mut out);
+        }
     }
     out
+}
+
+fn graph_lines(c: &Ctx, g: &nodos::Graph, here: &str, out: &mut Vec<String>) {
+    for (id, m) in graph(c, g) {
+        let n = id.and_then(|id| g.nodes.iter().find(|n| n.id == id));
+        let at = n.map_or(String::new(), |n| format!(" › nodo {} ({})", n.id, nodos::title(n)));
+        out.push(format!("{here} › grafo «{}»{at}: {m}", g.name));
+    }
+}
+
+/// Problemas de un grafo, cada uno con el nodo donde está: errores de compilación y luego
+/// los de validar los eventos que salen de él. `scene` = None para el grafo de una función.
+pub fn graph_problems(p: &Project, scene: Option<&Scene>, g: &nodos::Graph, base: Option<&Path>) -> Vec<(Option<nodos::NodeId>, String)> {
+    let file_ok = |f: &str| base.is_none_or(|b| b.join(f).is_file());
+    let all: Vec<&ObjectDef> = p.objects.iter().chain(p.scenes.iter().flat_map(|s| s.objects.iter())).collect();
+    match scene {
+        Some(s) => {
+            let objs: Vec<&ObjectDef> = p.objects_of(s).collect();
+            let layers: Vec<&str> = s.layers.iter().map(|l| l.name.as_str()).collect();
+            graph(&Ctx { p, objs: &objs, groups: s.groups.keys().map(String::as_str).collect(), layers: &layers, file_ok: &file_ok }, g)
+        }
+        None => graph(&Ctx { p, objs: &all, groups: p.scenes.iter().flat_map(|s| s.groups.keys().map(String::as_str)).collect(), layers: &[], file_ok: &file_ok }, g),
+    }
+}
+
+fn graph(c: &Ctx, g: &nodos::Graph) -> Vec<(Option<nodos::NodeId>, String)> {
+    let comp = nodos::compile_mapped(g);
+    let mut res: Vec<(Option<nodos::NodeId>, String)> = comp.errors.iter().map(|e| (e.node, e.msg.clone())).collect();
+    graph_events(c, &comp.events, &comp.origins, &mut res);
+    res
+}
+
+/// Quita la ubicación que agrega `instr` / `expr` (aquí la ubicación es el nodo).
+fn sin_lugar(m: &str) -> String {
+    let m = m.strip_prefix(": ").or_else(|| m.strip_prefix(" › ")).unwrap_or(m);
+    match m.split_once(": expresión") {
+        Some((head, rest)) if head.starts_with("argumento ") || head.starts_with("parámetro ") => format!("expresión{rest}"),
+        _ => m.to_string(),
+    }
+}
+
+fn graph_events(c: &Ctx, evs: &[Event], orgs: &[nodos::Origin], res: &mut Vec<(Option<nodos::NodeId>, String)>) {
+    for (e, o) in evs.iter().zip(orgs) {
+        let mut tmp = vec![];
+        match e.kind {
+            EventKind::Repeat => expr(&e.text, "", &mut tmp),
+            EventKind::ForEach if !c.known_obj(&e.text) => tmp.push(format!(": «para cada» con objeto desconocido «{}»", e.text)),
+            EventKind::While if e.conds.is_empty() => tmp.push(": «mientras» sin condiciones repetiría para siempre".into()),
+            _ => {}
+        }
+        res.extend(tmp.drain(..).map(|m| (Some(o.ev), sin_lugar(&m))));
+        for (i, id) in e.conds.iter().zip(&o.conds) {
+            instr(c, i, true, "", &mut tmp);
+            res.extend(tmp.drain(..).map(|m| (Some(*id), sin_lugar(&m))));
+        }
+        for (i, id) in e.acts.iter().zip(&o.acts) {
+            instr(c, i, false, "", &mut tmp);
+            res.extend(tmp.drain(..).map(|m| (Some(*id), sin_lugar(&m))));
+        }
+        graph_events(c, &e.sub, &o.sub, res);
+    }
 }
 
 struct Ctx<'a> {
@@ -200,5 +273,24 @@ mod tests {
         assert!(errs[1].contains("expresión «1 +»"));
         assert!(errs[2].contains("escena desconocida"));
         assert!(errs[3].contains("es una condición"));
+
+        // Grafos: errores de compilación y de validación, ubicados en su nodo.
+        let mut p: crate::model::Project = serde_json::from_str(src).unwrap();
+        let g: crate::nodos::Graph = serde_json::from_str(r#"{"name":"g","nodes":[
+            {"id":1,"k":"event","op":"key_pressed","args":["Space"]},
+            {"id":2,"k":"act","op":"add","args":["Nadie","x","1 +"]},
+            {"id":3,"k":"act","op":"delete","args":[""]}],
+            "flow":[{"from":1,"to":2},{"from":2,"to":3}]}"#).unwrap();
+        p.scenes[0].graphs.push(g);
+        let errs = super::validate(&p, None);
+        assert_eq!(errs.len(), 1, "{errs:#?}");
+        assert!(errs[0].contains("grafo «g» › nodo 3") && errs[0].contains("falta «Objeto»"), "{errs:#?}");
+        p.scenes[0].graphs[0].nodes[2].args[0] = "A".into();
+        let errs = super::validate(&p, None);
+        assert_eq!(errs.len(), 2, "{errs:#?}");
+        assert!(errs[0].contains("nodo 2 (Sumar a propiedad): argumento 1 (Objeto) «Nadie»"), "{errs:#?}");
+        let probs = super::graph_problems(&p, Some(&p.scenes[0]), &p.scenes[0].graphs[0], None);
+        assert_eq!(probs[1].0, Some(2));
+        assert!(probs[1].1.starts_with("expresión «1 +»"), "{probs:?}");
     }
 }

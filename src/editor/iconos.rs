@@ -136,3 +136,17 @@ pub const ARROWS_CLOCKWISE: &str = "\u{e094}";
 pub const LIST_BULLETS: &str = "\u{e2f2}";
 pub const DOOR_OPEN: &str = "\u{e7e6}";
 pub const FRAME_CORNERS: &str = "\u{e626}";
+// Nodos
+pub const GRAPH: &str = "\u{eb58}";
+pub const ALIGN_LEFT: &str = "\u{e50e}";
+pub const ALIGN_TOP: &str = "\u{e512}";
+pub const ARROWS_SPLIT: &str = "\u{ed3c}";
+pub const PLUGS_CONNECTED: &str = "\u{eb5a}";
+pub const MATH: &str = "\u{e31e}";
+pub const EQUALS: &str = "\u{e21c}";
+pub const LINK_BREAK: &str = "\u{e2e4}";
+pub const SELECTION_ALL: &str = "\u{e746}";
+pub const CLIPBOARD: &str = "\u{e196}";
+pub const GIT_BRANCH: &str = "\u{e278}";
+pub const CLOCK_CLOCKWISE: &str = "\u{e19e}";
+pub const TEXTBOX: &str = "\u{eb0a}";

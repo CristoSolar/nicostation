@@ -23,12 +23,16 @@
 //! `depurador` (corriendo con el héroe elegido), `registro` / `rendimiento` (esas pestañas del depurador; rendimiento con «ver toda
 //! la escena»), `vista-abajo` (la vista previa abajo, con la pestaña Eventos), `recarga` (cambia el fondo y agrega una moneda mientras
 //! juega: se ve «Cambios aplicados»), `jugar` (sin ensayo, con el teclado en el juego: probar con `--tecla Space`),
-//! `si-no` (agrega un «si no, cuando» y un «si no» debajo del primer evento).
+//! `si-no` (agrega un «si no, cuando» y un «si no» debajo del primer evento),
+//! `nodos` (Eventos en vista Nodos), `nodos-convertido` (pasa la hoja de la escena a un grafo y lo muestra),
+//! `nodos-paleta` (lo mismo, con el buscador de nodos abierto), `nodos-error` (lo mismo, con dos nodos rotos a propósito
+//! para ver los errores marcados), `nodos-eventos` (con el panel «Eventos generados»), `nodos-hoja` (la hoja vista como nodos).
 //!
 //! Vista previa: F6 empieza / pausa, F7 avanza un cuadro. Con el juego enfocado (clic en él) el teclado va al juego.
 //!
 //! `--captura salida.png` dibuja el editor sin ventana (1360×820, wgpu fuera de pantalla) y guarda la imagen;
-//! con `--tecla Enter` (u otra tecla de egui) la aprieta a mitad de la captura.
+//! con `--tecla Enter` (u otra tecla de egui) la aprieta a mitad de la captura, y `--guion "clic 400 300; tecla Delete"`
+//! simula mouse y teclado antes (ver `captura.rs`).
 //!
 //! Sin proyecto en la línea de comandos se muestra la bienvenida. `NICOSTATION_JUEGOS` cambia la carpeta donde se
 //! proponen los juegos nuevos (por defecto `~/Juegos`); los juegos recientes van en `$XDG_CONFIG_HOME/nicostation/recientes.json`.
@@ -64,6 +68,8 @@ mod captura;
 mod vista;
 #[path = "../editor/depurador.rs"]
 mod depurador;
+#[path = "../editor/nodos.rs"]
+mod nodos;
 
 use eframe::egui::{
     self, Align, Align2, AtomExt, Button, Color32, DragValue, Frame, Key, Layout, Margin, Modifiers, PointerButton, Pos2, Rect,
@@ -189,6 +195,9 @@ struct App {
     vista_partida: Vars,
     /// `--abrir vista…` pendiente (se aplica en el primer cuadro).
     vista_abrir: Option<String>,
+    // ---- nodos ----
+    /// Vista «Nodos» de Eventos y Mis bloques (lienzo, selección, buscador).
+    nv: nodos::Vista,
 }
 
 /// Pregunta que sigue a «+ Sprite» y «+ Mapa».
@@ -387,6 +396,7 @@ fn ren_all(p: &mut Project, scene: Option<usize>, t: P, old: &str, new: &str) {
     for (i, s) in p.scenes.iter_mut().enumerate() {
         if scene.is_none_or(|k| k == i) {
             ren_evs(&mut s.events, t, old, new);
+            s.graphs.iter_mut().for_each(|g| nodos::ren_grafo(g, t, old, new, ren_expr));
             if t == P::Object {
                 s.instances.iter_mut().filter(|n| n.obj == old).for_each(|n| n.obj = new.into());
                 s.groups.values_mut().flatten().filter(|o| *o == old).for_each(|o| *o = new.into());
@@ -395,6 +405,7 @@ fn ren_all(p: &mut Project, scene: Option<usize>, t: P, old: &str, new: &str) {
     }
     if scene.is_none() {
         p.functions.iter_mut().for_each(|f| ren_evs(&mut f.events, t, old, new));
+        p.functions.iter_mut().filter_map(|f| f.graph.as_mut()).for_each(|g| nodos::ren_grafo(g, t, old, new, ren_expr));
     }
 }
 
@@ -700,7 +711,7 @@ impl App {
             probs: vec![], probs_de: String::new(), jump: None, nota: None, files: vec![], files_at: None, bar_lr: (0., 0.),
             pintor: mapa::Pintor::default(), dib: None, nuevo: None,
             inicio: None, mis: Default::default(), mis_json: String::new(), mis_sesion: HashMap::new(), t: 0.,
-            vista: None, vprefs: vista::Prefs::default(), vista_partida: Vars::new(), vista_abrir: None,
+            vista: None, vprefs: vista::Prefs::default(), vista_partida: Vars::new(), vista_abrir: None, nv: nodos::Vista::default(),
         }
     }
 
@@ -753,6 +764,7 @@ impl App {
         self.func = self.func.min(self.p.functions.len().saturating_sub(1));
         (self.ed, self.fparams, self.drag_off) = (None, None, None);
         self.sel = None;
+        self.nv.reset();
         self.now = s;
         self.say(Nivel::Info, what);
     }
@@ -2332,7 +2344,7 @@ impl App {
                     act = Some(a);
                 }
                 ui.add_space(10.);
-                self.sheet(ui, Target::Func(fi));
+                self.eventos_o_nodos(ui, Target::Func(fi));
             } else if bloques::vacio(ui) {
                 act = Some(bloques::Act::Nuevo);
             }
@@ -2377,9 +2389,11 @@ impl App {
                 for (k, s) in self.p.scenes.iter_mut().enumerate() {
                     if global || k == sc {
                         cajitas::ren_var(&mut s.events, &old, &new);
+                        s.graphs.iter_mut().for_each(|g| nodos::ren_var_grafo(g, &old, &new));
                     }
                 }
                 self.p.functions.iter_mut().for_each(|f| cajitas::ren_var(&mut f.events, &old, &new));
+                self.p.functions.iter_mut().filter_map(|f| f.graph.as_mut()).for_each(|g| nodos::ren_var_grafo(g, &old, &new));
                 self.say(Nivel::Ok, format!("La cajita «{old}» ahora se llama «{new}» (también en los bloques)"));
             }
             None => {}
@@ -2410,7 +2424,7 @@ impl App {
             ui.add_space(4.);
             if ui.button(it(ic::PLUS, "Nueva función")).clicked() {
                 let n = (1..).map(|k| format!("funcion{k}")).find(|n| !self.p.functions.iter().any(|f| &f.name == n)).unwrap();
-                self.p.functions.push(Function { name: n, is_condition: false, params: vec![], events: vec![] });
+                self.p.functions.push(Function { name: n, is_condition: false, params: vec![], events: vec![], graph: None });
                 self.func = self.p.functions.len() - 1;
             }
             let fi = self.func;
@@ -2459,7 +2473,7 @@ impl App {
         });
         Frame::new().inner_margin(12).show(ui, |ui| {
             if self.func < self.p.functions.len() {
-                self.sheet(ui, Target::Func(self.func));
+                self.eventos_o_nodos(ui, Target::Func(self.func));
             } else {
                 ui.add_space(48.);
                 ui.vertical_centered(|ui| {
@@ -3008,6 +3022,7 @@ impl App {
                 self.vista_abrir = Some(que.into());
             }
             "si-no" => self.abrir_si_no(),
+            q if q.starts_with("nodos") => self.abrir_nodos(q),
             _ => {}
         }
     }
@@ -3541,7 +3556,7 @@ impl eframe::App for App {
         egui::CentralPanel::default_margins().frame(Frame::new().fill(BG).inner_margin(margin)).show(ui, |ui| match self.tab {
             _ if grande => self.vista_ui(ui),
             Tab::Escena => self.canvas(ui),
-            Tab::Eventos => self.sheet(ui, Target::Scene(self.sc)),
+            Tab::Eventos => self.eventos_o_nodos(ui, Target::Scene(self.sc)),
             Tab::Funciones => self.funcs(ui),
             Tab::Variables => self.variables(ui),
         });
@@ -3619,7 +3634,7 @@ fn main() -> eframe::Result {
         }
     }
     let mut app = App::new();
-    let (mut abrir, mut escena, mut file, mut captura, mut tecla) = (None, None, None, None, None);
+    let (mut abrir, mut escena, mut file, mut captura, mut tecla, mut guion) = (None, None, None, None, None, String::new());
     let mut it_ = args.iter();
     while let Some(a) = it_.next() {
         match a.as_str() {
@@ -3629,6 +3644,7 @@ fn main() -> eframe::Result {
             "--escena" => escena = it_.next().cloned(),
             "--captura" => captura = it_.next().cloned(),
             "--tecla" => tecla = it_.next().and_then(|k| Key::from_name(k)),
+            "--guion" => guion = it_.next().cloned().unwrap_or_default(),
             _ => file = Some(a.clone()),
         }
     }
@@ -3655,7 +3671,11 @@ fn main() -> eframe::Result {
     if let Some(out) = captura {
         let ctx = egui::Context::default();
         tema::aplicar(&ctx);
-        if let Err(e) = captura::capturar(&mut app, &ctx, tecla, Path::new(&out)) {
+        let pasos = captura::guion(&guion).unwrap_or_else(|e| {
+            eprintln!("--guion: {e}");
+            std::process::exit(2);
+        });
+        if let Err(e) = captura::capturar(&mut app, &ctx, tecla, pasos, Path::new(&out)) {
             eprintln!("No se pudo capturar: {e}");
             std::process::exit(1);
         }

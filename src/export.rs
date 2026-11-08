@@ -41,6 +41,7 @@ pub fn assets(p: &Project) -> BTreeSet<String> {
             events(&e.sub, out);
         }
     }
+    let p = &p.compiled();
     let mut out = BTreeSet::new();
     for o in p.objects.iter().chain(p.scenes.iter().flat_map(|s| s.objects.iter())) {
         match &o.kind {
