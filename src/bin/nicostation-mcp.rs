@@ -120,7 +120,7 @@ fn tools() -> Vec<J> {
                    "columna": n("Columna donde empieza (0)"), "fila": n("Fila donde empieza (0)"),
                    "agrandar": json!({"type": "boolean", "description": "Agrandar el mapa si las filas no caben (por defecto true)"})}), &["objeto", "filas", "leyenda"]),
         t("instancias_agregar", "Coloca instancias de objetos en una escena.",
-            json!({"escena": s("Escena"), "instancias": a("[{obj, x, y, layer?, angle?, z?, w?, h?, vars?}] (x,y = esquina superior izquierda)")}), &["escena", "instancias"]),
+            json!({"escena": s("Escena"), "instancias": a("[{obj, x, y, layer?, angle?, z?, w?, h?, vars?}]. En 2D x,y = esquina superior izquierda; en escenas 3D x,y,z = centro (Y arriba, metros) y se agregan pitch?, roll?, d?")}), &["escena", "instancias"]),
         t("instancias_quitar", "Quita instancias de una escena: las de un objeto, o todas.",
             json!({"escena": s("Escena"), "objeto": s("Solo las de este objeto (omitir = todas)")}), &["escena"]),
         t("eventos_poner", "Agrega eventos a la hoja de una escena o función (o la reemplaza).", ev_props, &["eventos"]),
@@ -919,7 +919,12 @@ fn simulate(path: &Path, a: &J) -> Result<String, String> {
             next_sample += cada;
             let pos: Vec<J> = w.insts.iter().filter(|i| seguir.contains(&i.obj))
                 .map(|i| {
-                    let mut j = json!({"obj": i.obj, "x": i.x.round(), "y": i.y.round()});
+                    let mut j = if w.dim3 {
+                        let r2 = |v: f32| (v as f64 * 100.).round() / 100.;
+                        json!({"obj": i.obj, "x": r2(i.x), "y": r2(i.y), "z": r2(i.z), "angle": r2(i.angle), "pitch": r2(i.pitch)})
+                    } else {
+                        json!({"obj": i.obj, "x": i.x.round(), "y": i.y.round()})
+                    };
                     if i.on_floor { j["en_suelo"] = json!(true) }
                     j
                 }).collect();
@@ -950,7 +955,12 @@ fn simulate(path: &Path, a: &J) -> Result<String, String> {
     w.insts.iter().for_each(|i| *por_objeto.entry(&i.obj).or_default() += 1);
     let inst: Vec<J> = (0..w.insts.len()).take(60).map(|k| {
         let i = &w.insts[k];
-        let mut j = json!({"obj": i.obj, "x": i.x.round(), "y": i.y.round(), "w": i.w.round(), "h": i.h.round()});
+        let mut j = if w.dim3 {
+            let r2 = |v: f32| (v as f64 * 100.).round() / 100.;
+            json!({"obj": i.obj, "x": r2(i.x), "y": r2(i.y), "z": r2(i.z), "angle": r2(i.angle), "pitch": r2(i.pitch), "w": r2(i.w), "h": r2(i.h), "d": r2(i.d)})
+        } else {
+            json!({"obj": i.obj, "x": i.x.round(), "y": i.y.round(), "w": i.w.round(), "h": i.h.round()})
+        };
         if let nicostation::model::Value::Str(an) = w.get(k, "anim") {
             if !an.is_empty() { j["anim"] = json!(an) }
         }

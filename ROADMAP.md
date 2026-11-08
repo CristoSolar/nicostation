@@ -49,8 +49,8 @@ Tecnología elegida tras probarla: kiss3d 0.47 (render wgpu, el mismo que usa el
 glTF (modelos; FBX/OBJ se convierten al importar), kira 0.12 (audio 3D). Plan B: Bevy detrás del mismo módulo `render3d`.
 Los juegos 3D usan un reproductor propio (`nicostation3d`); los 2D siguen en el actual. Las hojas de eventos y los
 nodos programan ambos.
-- [ ] F1 Modelo 3D en el proyecto: escenas 3D, nodos con transformación jerárquica, mallas, luces, cámara, entorno.
-- [ ] F2 Reproductor `nicostation3d`: ventana, entrada y audio fuera de macroquad; mismo `World` y eventos.
+- [x] F1 Modelo 3D en el proyecto: escenas 3D, nodos con transformación jerárquica, mallas, luces, cámara, entorno.
+- [x] F2 Reproductor `nicostation3d`: ventana, entrada y audio fuera de macroquad; mismo `World` y eventos.
 - [ ] F3 Render «aspecto Godot»: PBR, sombras en cascadas, cielo con luz ambiente, HDR, glow, tonemap, SSAO.
 - [ ] F4 Física: cuerpos estáticos/rígidos/cinemáticos, áreas, raycast; comportamiento `character3d` (move_and_slide).
 - [ ] F5 Importar glTF con materiales, esqueletos y animaciones; reproducción y mezcla de animaciones.

@@ -2,6 +2,7 @@
 pub mod catalog;
 pub mod export;
 pub mod expr;
+pub mod guardado;
 pub mod misiones;
 pub mod model;
 pub mod nodos;

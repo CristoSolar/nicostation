@@ -1,0 +1,751 @@
+{
+  "name": "Mundo 3D",
+  "width": 960.0,
+  "height": 540.0,
+  "first_scene": "Principal",
+  "globals": {},
+  "objects": [],
+  "scenes": [
+    {
+      "name": "Principal",
+      "background": [
+        0,
+        0,
+        0
+      ],
+      "layers": [
+        {
+          "name": "",
+          "visible": true,
+          "fixed": false
+        }
+      ],
+      "objects": [
+        {
+          "name": "Suelo",
+          "type": "mesh",
+          "shape": "plane",
+          "size": [
+            40.0,
+            0.1,
+            40.0
+          ],
+          "color": [
+            118,
+            140,
+            96
+          ],
+          "metallic": 0.0,
+          "roughness": 0.95
+        },
+        {
+          "name": "CajaMetal",
+          "type": "mesh",
+          "shape": "cube",
+          "size": [
+            1.6,
+            1.6,
+            1.6
+          ],
+          "color": [
+            210,
+            212,
+            220
+          ],
+          "metallic": 1.0,
+          "roughness": 0.22
+        },
+        {
+          "name": "CajaRugosa",
+          "type": "mesh",
+          "shape": "cube",
+          "size": [
+            2.2,
+            1.2,
+            1.4
+          ],
+          "color": [
+            176,
+            92,
+            58
+          ],
+          "metallic": 0.0,
+          "roughness": 1.0
+        },
+        {
+          "name": "EsferaOro",
+          "type": "mesh",
+          "shape": "sphere",
+          "size": [
+            1.4,
+            1.4,
+            1.4
+          ],
+          "color": [
+            255,
+            196,
+            86
+          ],
+          "metallic": 1.0,
+          "roughness": 0.15
+        },
+        {
+          "name": "EsferaPlastico",
+          "type": "mesh",
+          "shape": "sphere",
+          "size": [
+            1.2,
+            1.2,
+            1.2
+          ],
+          "color": [
+            60,
+            110,
+            230
+          ],
+          "metallic": 0.0,
+          "roughness": 0.35
+        },
+        {
+          "name": "Pilar",
+          "type": "mesh",
+          "shape": "cylinder",
+          "size": [
+            0.8,
+            3.2,
+            0.8
+          ],
+          "color": [
+            232,
+            228,
+            218
+          ],
+          "metallic": 0.0,
+          "roughness": 0.6
+        },
+        {
+          "name": "Cono",
+          "type": "mesh",
+          "shape": "cone",
+          "size": [
+            1.2,
+            1.8,
+            1.2
+          ],
+          "color": [
+            120,
+            200,
+            120
+          ],
+          "metallic": 0.0,
+          "roughness": 0.5
+        },
+        {
+          "name": "Neon",
+          "type": "mesh",
+          "shape": "cube",
+          "size": [
+            0.25,
+            2.4,
+            0.25
+          ],
+          "color": [
+            255,
+            80,
+            200
+          ],
+          "metallic": 0.0,
+          "roughness": 0.5,
+          "emission": [
+            255,
+            60,
+            190
+          ]
+        },
+        {
+          "name": "Lampara",
+          "type": "mesh",
+          "shape": "sphere",
+          "size": [
+            0.35,
+            0.35,
+            0.35
+          ],
+          "color": [
+            255,
+            210,
+            140
+          ],
+          "metallic": 0.0,
+          "roughness": 0.5,
+          "emission": [
+            255,
+            190,
+            110
+          ]
+        },
+        {
+          "name": "Moneda",
+          "type": "mesh",
+          "shape": "sphere",
+          "size": [
+            0.6,
+            0.6,
+            0.6
+          ],
+          "color": [
+            90,
+            230,
+            255
+          ],
+          "metallic": 0.3,
+          "roughness": 0.2,
+          "emission": [
+            30,
+            160,
+            230
+          ]
+        },
+        {
+          "name": "Jugador",
+          "type": "mesh",
+          "shape": "capsule",
+          "size": [
+            0.8,
+            1.8,
+            0.8
+          ],
+          "color": [
+            236,
+            84,
+            112
+          ],
+          "metallic": 0.0,
+          "roughness": 0.45
+        },
+        {
+          "name": "Visor",
+          "type": "mesh",
+          "shape": "cube",
+          "size": [
+            0.5,
+            0.22,
+            0.2
+          ],
+          "color": [
+            30,
+            30,
+            40
+          ],
+          "metallic": 0.8,
+          "roughness": 0.1
+        },
+        {
+          "name": "Sol",
+          "type": "light",
+          "light": "sun",
+          "color": [
+            255,
+            244,
+            228
+          ],
+          "energy": 1.0,
+          "range": 10.0,
+          "spot_angle": 45.0,
+          "shadows": true
+        },
+        {
+          "name": "Foco",
+          "type": "light",
+          "light": "point",
+          "color": [
+            255,
+            170,
+            90
+          ],
+          "energy": 3.0,
+          "range": 9.0,
+          "spot_angle": 45.0,
+          "shadows": true
+        },
+        {
+          "name": "Camara",
+          "type": "camera3d",
+          "fov": 65.0,
+          "near": 0.05,
+          "far": 4000.0
+        },
+        {
+          "name": "Marcador",
+          "type": "text",
+          "text": "Puntos: {puntos} / 6",
+          "size": 30.0,
+          "color": [
+            255,
+            255,
+            255
+          ]
+        }
+      ],
+      "groups": {},
+      "instances": [
+        {
+          "obj": "Suelo",
+          "x": 0.0,
+          "y": 0.0
+        },
+        {
+          "obj": "Jugador",
+          "x": 0.0,
+          "y": 0.9,
+          "z": 4.0
+        },
+        {
+          "obj": "Visor",
+          "x": 0.0,
+          "y": 1.45,
+          "z": 3.6
+        },
+        {
+          "obj": "CajaMetal",
+          "x": -3.0,
+          "y": 0.8,
+          "angle": 25.0,
+          "z": -1.0
+        },
+        {
+          "obj": "CajaRugosa",
+          "x": 3.5,
+          "y": 0.6,
+          "angle": -15.0,
+          "z": -0.5
+        },
+        {
+          "obj": "CajaRugosa",
+          "x": 3.3,
+          "y": 1.8,
+          "angle": 20.0,
+          "z": -0.6,
+          "w": 1.6,
+          "h": 1.0,
+          "d": 1.0
+        },
+        {
+          "obj": "EsferaOro",
+          "x": 0.0,
+          "y": 0.7,
+          "z": -3.0
+        },
+        {
+          "obj": "EsferaPlastico",
+          "x": 1.8,
+          "y": 0.6,
+          "z": -4.5
+        },
+        {
+          "obj": "Pilar",
+          "x": -5.0,
+          "y": 1.6,
+          "z": -5.0
+        },
+        {
+          "obj": "Pilar",
+          "x": 5.0,
+          "y": 1.6,
+          "z": -5.0
+        },
+        {
+          "obj": "Cono",
+          "x": -1.8,
+          "y": 0.9,
+          "z": -5.5
+        },
+        {
+          "obj": "Neon",
+          "x": 6.5,
+          "y": 1.2,
+          "z": 2.0
+        },
+        {
+          "obj": "Lampara",
+          "x": -4.0,
+          "y": 2.6,
+          "z": 1.5
+        },
+        {
+          "obj": "Foco",
+          "x": -4.0,
+          "y": 2.6,
+          "z": 1.5
+        },
+        {
+          "obj": "Sol",
+          "x": 0.0,
+          "y": 10.0,
+          "angle": 35.0,
+          "pitch": -50.0
+        },
+        {
+          "obj": "Camara",
+          "x": 0.0,
+          "y": 4.0,
+          "z": 10.0
+        },
+        {
+          "obj": "Marcador",
+          "x": 18.0,
+          "y": 14.0
+        },
+        {
+          "obj": "Moneda",
+          "x": 0.0,
+          "y": 0.8,
+          "z": 1.0
+        },
+        {
+          "obj": "Moneda",
+          "x": -2.5,
+          "y": 0.8,
+          "z": 2.5
+        },
+        {
+          "obj": "Moneda",
+          "x": 2.5,
+          "y": 0.8,
+          "z": 2.0
+        },
+        {
+          "obj": "Moneda",
+          "x": -6.0,
+          "y": 0.8,
+          "z": -2.0
+        },
+        {
+          "obj": "Moneda",
+          "x": 6.0,
+          "y": 0.8,
+          "z": -2.5
+        },
+        {
+          "obj": "Moneda",
+          "x": 0.0,
+          "y": 0.8,
+          "z": -7.5
+        }
+      ],
+      "vars": {
+        "puntos": 0.0
+      },
+      "events": [
+        {
+          "conds": [
+            {
+              "op": "start"
+            }
+          ],
+          "acts": [
+            {
+              "op": "set_var",
+              "args": [
+                "puntos",
+                "0"
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "comment",
+          "text": "Moverse con flechas o WASD"
+        },
+        {
+          "conds": [
+            {
+              "op": "or",
+              "sub": [
+                {
+                  "op": "key_down",
+                  "args": [
+                    "Up"
+                  ]
+                },
+                {
+                  "op": "key_down",
+                  "args": [
+                    "W"
+                  ]
+                }
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "move_forward",
+              "args": [
+                "Jugador",
+                "6 * dt"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "or",
+              "sub": [
+                {
+                  "op": "key_down",
+                  "args": [
+                    "Down"
+                  ]
+                },
+                {
+                  "op": "key_down",
+                  "args": [
+                    "S"
+                  ]
+                }
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "move_forward",
+              "args": [
+                "Jugador",
+                "-4 * dt"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "or",
+              "sub": [
+                {
+                  "op": "key_down",
+                  "args": [
+                    "Left"
+                  ]
+                },
+                {
+                  "op": "key_down",
+                  "args": [
+                    "A"
+                  ]
+                }
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "add",
+              "args": [
+                "Jugador",
+                "angle",
+                "120 * dt"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "or",
+              "sub": [
+                {
+                  "op": "key_down",
+                  "args": [
+                    "Right"
+                  ]
+                },
+                {
+                  "op": "key_down",
+                  "args": [
+                    "D"
+                  ]
+                }
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "add",
+              "args": [
+                "Jugador",
+                "angle",
+                "-120 * dt"
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "comment",
+          "text": "El visor va delante de la cara; la cámara, 6 m detrás y 3 m arriba, mirando al jugador"
+        },
+        {
+          "acts": [
+            {
+              "op": "set",
+              "args": [
+                "Visor",
+                "x",
+                "Jugador.x + lengthdir_x(0.4, Jugador.angle + 90)"
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Visor",
+                "z",
+                "Jugador.z + lengthdir_y(0.4, Jugador.angle - 90)"
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Visor",
+                "y",
+                "Jugador.y + 0.55"
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Visor",
+                "angle",
+                "Jugador.angle"
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Camara",
+                "x",
+                "Jugador.x + lengthdir_x(6, Jugador.angle - 90)"
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Camara",
+                "z",
+                "Jugador.z + lengthdir_y(6, Jugador.angle + 90)"
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Camara",
+                "y",
+                "Jugador.y + 3"
+              ]
+            },
+            {
+              "op": "look_at3",
+              "args": [
+                "Camara",
+                "Jugador.x",
+                "Jugador.y + 0.8",
+                "Jugador.z"
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Moneda",
+                "y",
+                "0.8 + 0.15 * sin(time * 3)"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "collides",
+              "args": [
+                "Jugador",
+                "Moneda"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "delete",
+              "args": [
+                "Moneda"
+              ]
+            },
+            {
+              "op": "add_var",
+              "args": [
+                "puntos",
+                "1"
+              ]
+            },
+            {
+              "op": "play_sound",
+              "args": [
+                "sonidos/moneda.wav",
+                "80"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "compare",
+              "args": [
+                "puntos",
+                ">=",
+                "6"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "set_text",
+              "args": [
+                "Marcador",
+                "\"¡Ganaste! Juntaste las 6\""
+              ]
+            }
+          ]
+        }
+      ],
+      "dim3": true,
+      "environment": {
+        "sky_top": [
+          70,
+          125,
+          210
+        ],
+        "sky_horizon": [
+          196,
+          214,
+          232
+        ],
+        "sky_ground": [
+          70,
+          64,
+          58
+        ],
+        "ambient": 1.0,
+        "fog_color": [
+          196,
+          214,
+          232
+        ],
+        "fog_start": 30.0,
+        "fog_end": 90.0,
+        "glow": true,
+        "ssao": true,
+        "tonemap": "filmic",
+        "exposure": 1.0
+      }
+    }
+  ],
+  "functions": []
+}

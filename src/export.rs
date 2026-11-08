@@ -55,6 +55,9 @@ pub fn assets(p: &Project) -> BTreeSet<String> {
     }
     for s in &p.scenes {
         events(&s.events, &mut out);
+        if let Some(img) = s.environment.as_ref().map(|e| &e.sky_image).filter(|i| !i.is_empty()) {
+            out.insert(img.clone());
+        }
     }
     for f in &p.functions {
         events(&f.events, &mut out);

@@ -1,0 +1,15 @@
+[package]
+name = "nicostation3d"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+description = "Reproductor 3D de NicoStation (kiss3d + kira)"
+
+[dependencies]
+nicostation = { path = ".." }
+serde_json = "1"
+# Render 3D detrás de la fachada `render3d` (ver docs/tecnologia-3d.md §7.2). Versión fijada: la API cambia seguido.
+kiss3d = "=0.47.0"
+# Mismas features que pide kiss3d, para no compilar `image` dos veces.
+image = { version = "0.25", default-features = false, features = ["default-formats"] }
+kira = { version = "0.12", default-features = false, features = ["cpal", "wav", "pcm", "ogg", "vorbis", "mp3"] }
