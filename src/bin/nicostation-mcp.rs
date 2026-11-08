@@ -618,6 +618,9 @@ fn resumen(p: &Project, path: &Path) -> String {
             Kind::Text { .. } => "text".into(),
             Kind::Box { .. } => "box".into(),
             Kind::Tilemap { tileset, cols, rows, tile, .. } => format!("tilemap {cols}x{rows} baldosas de {tile}px, tileset {tileset}"),
+            Kind::Mesh { shape, model, size, .. } => format!("mesh 3D {shape:?} {size:?}{}", if model.is_empty() { String::new() } else { format!(" modelo {model}") }),
+            Kind::Light { light, .. } => format!("luz 3D {light:?}"),
+            Kind::Camera3d { fov, .. } => format!("cámara 3D fov {fov}"),
         };
         let behs: Vec<String> = o.behaviors.iter().filter_map(|b| serde_json::to_value(b).ok()?.get("type")?.as_str().map(String::from)).collect();
         format!("  - {} ({kind}){}\n", o.name, if behs.is_empty() { String::new() } else { format!(" comportamientos {behs:?}") })
@@ -982,6 +985,20 @@ Capa "" = base. fixed=true no sigue a la cámara (HUD).
   El tileset es una imagen con baldosas en grilla (índice 0 arriba a la izquierda, de izquierda a derecha). Expresión tile(Mapa, x, y).
 Todos aceptan "behaviors": [...] y "vars": { "vida": 3 }.
 Instancia: { "obj", "x", "y", "layer"?, "angle"?, "z"?, "w"?, "h"?, "vars"? }  (x,y = esquina superior izquierda; rota alrededor del centro)
+
+## Escenas 3D
+Una escena con "dim3": true es 3D (se juega con el reproductor 3D). Allí x, y, z son la posición del CENTRO en metros,
+Y hacia arriba, y adelante es -Z. angle gira alrededor del eje vertical (grados), pitch inclina, roll de costado.
+"environment": { "sky_top", "sky_horizon", "sky_ground": [r,g,b], "sky_image": "hdr opcional", "ambient": 1,
+  "fog_color", "fog_start", "fog_end", "glow": true, "ssao": true, "tonemap": "filmic|aces|agx|linear", "exposure": 1 }
+Objetos 3D:
+- mesh: { "type": "mesh", "shape": "cube|sphere|plane|capsule|cylinder|cone|model", "model": "modelos/x.glb", "size": [w,h,d],
+  "color": [r,g,b], "metallic": 0..1, "roughness": 0..1, "texture": "img/...", "emission": [r,g,b] }
+- light: { "type": "light", "light": "sun|point|spot", "color", "energy": 1, "range": 10, "spot_angle": 45, "shadows": true }
+  (apunta según angle/pitch; un sol con pitch -50 ilumina en diagonal)
+- camera3d: { "type": "camera3d", "fov": 70, "near": 0.05, "far": 4000 } (la primera instancia es la cámara del juego)
+Instancias 3D: { "obj", "x", "y", "z", "angle", "pitch", "roll", "w"?, "h"?, "d"? }. Propiedades: d, pitch, roll, scale_z.
+Bloques 3D: move_forward(obj, metros), move_right(obj, metros), look_at3(obj, x, y, z). collides usa cajas 3D.
 
 ## Comportamientos (con sus valores por defecto)
 "#);

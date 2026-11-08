@@ -509,6 +509,8 @@ pub fn dibujar(painter: &egui::Painter, area: Rect, s: &Sesion) -> (Marco, Vec<(
             let mul = |c: [u8; 3]| rgba([0, 1, 2].map(|k| (c[k] as u16 * o.tint[k] as u16 / 255) as u8), alpha);
             let quad = o.hitbox().map(|(x, y)| pant(x, y));
             match &def.kind {
+                // ponytail: la vista previa 3D dentro del editor llega con el visor 3D (etapa F7).
+                Kind::Mesh { .. } | Kind::Light { .. } | Kind::Camera3d { .. } => {}
                 Kind::Box { color, .. } => {
                     painter.add(egui::Shape::convex_polygon(quad.to_vec(), mul(*color), Stroke::NONE));
                 }

@@ -260,7 +260,7 @@ mod tests {
         let mut p = ini.clone();
         let heroe = p.scenes[0].objects.iter_mut().find(|o| o.name == "Heroe").unwrap();
         if let Behavior::Platformer { jump_speed, .. } = &mut heroe.behaviors[0] { *jump_speed = 850. }
-        for _ in 0..3 { p.scenes[0].instances.push(Instance { obj: "Moneda".into(), x: 0., y: 0., layer: String::new(), angle: 0., z: 0., w: None, h: None, vars: Default::default() }) }
+        for _ in 0..3 { p.scenes[0].instances.push(Instance { obj: "Moneda".into(), ..Default::default() }) }
         fn bump(l: &mut [Event]) {
             for e in l {
                 if e.conds.iter().any(|c| c.op == "collides" && c.args.contains(&"Moneda".to_string())) {

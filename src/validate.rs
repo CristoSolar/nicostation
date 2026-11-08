@@ -31,6 +31,16 @@ pub fn validate(p: &Project, base: Option<&Path>) -> Vec<String> {
                 out.push(format!("objeto «{}»: el mapa tiene {} celdas pero cols x rows = {}", o.name, data.len(), cols * rows));
             }
         }
+        if let Kind::Mesh { shape, model, texture, .. } = &o.kind {
+            if *shape == Shape3::Model && model.is_empty() {
+                out.push(format!("objeto «{}»: la forma es «modelo» pero no tiene archivo glTF", o.name));
+            }
+            for f in [model, texture].into_iter().filter(|f| !f.is_empty()) {
+                if !file_ok(f) {
+                    out.push(format!("objeto «{}»: no existe el archivo «{f}»", o.name));
+                }
+            }
+        }
         if let Kind::Sprite { animations, .. } = &o.kind {
             if animations.is_empty() || animations.iter().any(|a| a.frames.is_empty()) {
                 out.push(format!("objeto «{}»: cada sprite necesita al menos una animación con una imagen", o.name));

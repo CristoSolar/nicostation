@@ -92,6 +92,9 @@ pub const CATALOG: &[Meta] = &[
     m!(false, "separate", "Objetos", "Separar de", "Sacar a _0_ de encima de _1_", ["Objeto": Object, "Obstáculo": Object]),
     m!(false, "set_tile", "Objetos", "Cambiar baldosa", "Poner la baldosa _3_ en la columna _1_, fila _2_ de _0_", ["Mapa": Object, "Columna": Expr, "Fila": Expr, "Baldosa (-1 = vacía)": Expr]),
     m!(false, "tween", "Movimiento", "Cambio suave", "Llevar _1_ de _0_ a _2_ en _3_ s (curva _4_)", ["Objeto": Object, "Propiedad": Prop, "Valor final": Expr, "Segundos": Expr, "Curva": Ease]),
+    m!(false, "move_forward", "3D", "Avanzar", "Mover _0_ hacia adelante _1_ metros", ["Objeto": Object, "Metros": Expr]),
+    m!(false, "move_right", "3D", "Moverse de costado", "Mover _0_ hacia la derecha _1_ metros", ["Objeto": Object, "Metros": Expr]),
+    m!(false, "look_at3", "3D", "Mirar hacia (3D)", "Girar _0_ para que mire a (_1_, _2_, _3_)", ["Objeto": Object, "X": Expr, "Y": Expr, "Z": Expr]),
     m!(false, "jump", "Movimiento", "Saltar", "Hacer saltar a _0_", ["Objeto": Object]),
     m!(false, "set_var", "Variables", "Variable de escena", "Variable _0_ = _1_", ["Variable": Var, "Valor": Expr]),
     m!(false, "add_var", "Variables", "Sumar a variable", "Sumar _1_ a la variable _0_", ["Variable": Var, "Valor": Expr]),
@@ -130,7 +133,7 @@ pub const KEYS: &[&str] = &[
     "Key5", "Key6", "Key7", "Key8", "Key9",
 ];
 /// Propiedades de objeto conocidas (además, cualquier otro nombre es una variable del objeto).
-pub const PROPS: &[&str] = &["x", "y", "cx", "cy", "w", "h", "angle", "opacity", "z", "speed", "visible", "scale_x", "scale_y", "tint"];
+pub const PROPS: &[&str] = &["x", "y", "cx", "cy", "w", "h", "angle", "opacity", "z", "speed", "visible", "scale_x", "scale_y", "tint", "d", "pitch", "roll", "scale_z"];
 
 pub fn meta(op: &str) -> Option<&'static Meta> {
     CATALOG.iter().find(|m| m.op == op)
@@ -207,6 +210,9 @@ pub fn kid(op: &str) -> Kid {
         "camera_bounds" => ("La cámara no muestra nada fuera de este rectángulo: pon el tamaño de tu nivel.", true),
         "camera_shake" => ("Hace temblar la pantalla, como en una explosión.", true),
         "camera_zoom_to" => ("Acerca o aleja la cámara poco a poco.", false),
+        "move_forward" => ("Mueve el objeto hacia donde está mirando. Usa «por segundo» (dt) para que se mueva parejo: 5 * dt.", true),
+        "move_right" => ("Mueve el objeto de costado, sin girarlo (para caminar como cangrejo).", false),
+        "look_at3" => ("Gira el objeto 3D para que mire a un punto. Ejemplo: el enemigo mira al jugador.", false),
         "jump" => ("Hace saltar al personaje de plataformas, como si apretaras la tecla de salto.", false),
         "set_var" => ("Guarda un valor en una cajita (variable) de esta escena. Ejemplo: poner vidas en 3.", true),
         "add_var" => ("Suma a una cajita (variable) de esta escena. Ejemplo: sumar 1 a los puntos.", true),
@@ -278,6 +284,10 @@ pub fn prop_label(p: &str) -> String {
         "z" => "adelante o atrás (más alto = más adelante)".into(),
         "speed" => "velocidad".into(),
         "visible" => "visible (1 sí, 0 no)".into(),
+        "d" => "profundidad (3D)".into(),
+        "pitch" => "inclinación arriba/abajo (3D)".into(),
+        "roll" => "giro de costado (3D)".into(),
+        "scale_z" => "tamaño a lo profundo (3D)".into(),
         "scale_x" => "tamaño a lo ancho (1 normal, 2 el doble)".into(),
         "scale_y" => "tamaño a lo alto (1 normal, 2 el doble)".into(),
         "tint" => "color (\"rojo\", \"#ff0000\"...)".into(),

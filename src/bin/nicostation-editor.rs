@@ -590,6 +590,81 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
             ui.end_row();
         }
         Kind::Tilemap { .. } => {}
+        Kind::Mesh { shape, model, size, color, metallic, roughness, texture, emission } => {
+            lbl(ui, "Forma");
+            egui::ComboBox::from_id_salt("forma3d").selected_text(format!("{shape:?}")).show_ui(ui, |ui| {
+                for s in [Shape3::Cube, Shape3::Sphere, Shape3::Plane, Shape3::Capsule, Shape3::Cylinder, Shape3::Cone, Shape3::Model] {
+                    ui.selectable_value(shape, s, format!("{s:?}"));
+                }
+            });
+            ui.end_row();
+            if *shape == Shape3::Model {
+                lbl(ui, "Modelo glTF");
+                ui.add(TextEdit::singleline(model).desired_width(150.).hint_text("modelos/casa.glb"));
+                ui.end_row();
+            }
+            lbl(ui, "Tamaño (m)");
+            ui.horizontal(|ui| {
+                for v in size.iter_mut() {
+                    ui.add(DragValue::new(v).speed(0.05).range(0.01..=1000.));
+                }
+            });
+            ui.end_row();
+            lbl(ui, "Color");
+            ui.color_edit_button_srgb(color);
+            ui.end_row();
+            lbl(ui, "Metálico");
+            ui.add(egui::Slider::new(metallic, 0.0..=1.0));
+            ui.end_row();
+            lbl(ui, "Rugosidad");
+            ui.add(egui::Slider::new(roughness, 0.0..=1.0)).on_hover_text("0 = espejo, 1 = mate");
+            ui.end_row();
+            lbl(ui, "Textura");
+            ui.add(TextEdit::singleline(texture).desired_width(150.).hint_text("opcional"));
+            ui.end_row();
+            lbl(ui, "Brillo propio");
+            ui.color_edit_button_srgb(emission);
+            ui.end_row();
+        }
+        Kind::Light { light, color, energy, range, spot_angle, shadows } => {
+            lbl(ui, "Tipo");
+            egui::ComboBox::from_id_salt("luz3d").selected_text(match light { LightKind::Sun => "Sol", LightKind::Point => "Puntual", LightKind::Spot => "Foco" }).show_ui(ui, |ui| {
+                ui.selectable_value(light, LightKind::Sun, "Sol");
+                ui.selectable_value(light, LightKind::Point, "Puntual");
+                ui.selectable_value(light, LightKind::Spot, "Foco");
+            });
+            ui.end_row();
+            lbl(ui, "Color");
+            ui.color_edit_button_srgb(color);
+            ui.end_row();
+            lbl(ui, "Energía");
+            ui.add(DragValue::new(energy).speed(0.05).range(0.0..=100.));
+            ui.end_row();
+            if *light != LightKind::Sun {
+                lbl(ui, "Alcance (m)");
+                ui.add(DragValue::new(range).speed(0.1).range(0.1..=1000.));
+                ui.end_row();
+            }
+            if *light == LightKind::Spot {
+                lbl(ui, "Apertura");
+                ui.add(DragValue::new(spot_angle).range(1.0..=179.).suffix("°"));
+                ui.end_row();
+            }
+            lbl(ui, "Sombras");
+            ui.checkbox(shadows, "");
+            ui.end_row();
+        }
+        Kind::Camera3d { fov, near, far } => {
+            lbl(ui, "Campo de visión");
+            ui.add(DragValue::new(fov).range(10.0..=170.).suffix("°"));
+            ui.end_row();
+            lbl(ui, "Cerca / lejos (m)");
+            ui.horizontal(|ui| {
+                ui.add(DragValue::new(near).speed(0.01).range(0.001..=10.));
+                ui.add(DragValue::new(far).speed(10.).range(1.0..=100000.));
+            });
+            ui.end_row();
+        }
     });
     ui.add_space(4.);
     if let Kind::Sprite { animations, .. } = &mut o.kind {
@@ -682,6 +757,9 @@ fn kind_icon(k: &Kind) -> &'static str {
         Kind::Text { .. } => ic::TEXT_T,
         Kind::Box { .. } => ic::CUBE,
         Kind::Tilemap { .. } => ic::MAP,
+        Kind::Mesh { .. } => ic::CUBE,
+        Kind::Light { .. } => ic::LIGHTBULB,
+        Kind::Camera3d { .. } => ic::CAMERA,
     }
 }
 
@@ -691,6 +769,9 @@ fn kind_name(k: &Kind) -> &'static str {
         Kind::Text { .. } => "Texto",
         Kind::Box { .. } => "Caja",
         Kind::Tilemap { .. } => "Mapa",
+        Kind::Mesh { .. } => "Objeto 3D",
+        Kind::Light { .. } => "Luz 3D",
+        Kind::Camera3d { .. } => "Cámara 3D",
     }
 }
 
@@ -915,6 +996,9 @@ impl App {
 
     fn obj_size(&self, o: &ObjectDef) -> Vec2 {
         match &o.kind {
+            // En el lienzo 2D, un objeto 3D se ve desde arriba (32 px por metro) hasta el visor 3D (F7).
+            Kind::Mesh { size, .. } => Vec2::new(size[0] * 32., size[2] * 32.),
+            Kind::Light { .. } | Kind::Camera3d { .. } => Vec2::splat(24.),
             Kind::Box { w, h, .. } => Vec2::new(*w, *h),
             Kind::Text { text, size, .. } => Vec2::new(text.chars().count().max(1) as f32 * size * 0.55, *size),
             Kind::Sprite { w, h, animations } if *w <= 0. || *h <= 0. => {
@@ -988,6 +1072,9 @@ impl App {
                     animations.first().and_then(|a| a.frames.first()).and_then(|f| self.texture(ctx, f)).map_or(eventos::Thumb::Empty, eventos::Thumb::Tex)
                 }
                 Kind::Tilemap { tileset, .. } => self.texture(ctx, tileset).map_or(eventos::Thumb::Color([89, 192, 89]), eventos::Thumb::Tex),
+                Kind::Mesh { color, .. } => eventos::Thumb::Color(*color),
+                Kind::Light { color, .. } => eventos::Thumb::Color(*color),
+                Kind::Camera3d { .. } => eventos::Thumb::Color([120, 120, 130]),
             };
             l.thumbs.insert(o.name.clone(), t);
         }
@@ -1015,7 +1102,7 @@ impl App {
         let at = if self.snap { (at.to_vec2() / self.grid).floor() * self.grid } else { at.to_vec2() };
         let layer = self.cur_layer.clone();
         let s = self.scene();
-        s.instances.push(Instance { obj, x: at.x, y: at.y, layer, angle: 0., z: 0., w: None, h: None, vars: Vars::new() });
+        s.instances.push(Instance { obj, x: at.x, y: at.y, layer, ..Default::default() });
         self.sel_inst = Some(s.instances.len() - 1);
     }
 
@@ -1407,7 +1494,7 @@ impl App {
         let platform = Behavior::Platform { jumpthru: false, ladder: false, grabbable: false };
         let s = self.scene();
         s.objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![platform], vars: Vars::new() });
-        s.instances.push(Instance { obj: n.clone(), x: 0., y: 0., layer: String::new(), angle: 0., z: 0., w: None, h: None, vars: Vars::new() });
+        s.instances.push(Instance { obj: n.clone(), ..Default::default() });
         self.sel_inst = Some(s.instances.len() - 1);
         self.sel_obj = Some(n.clone());
         self.pintor = mapa::Pintor::default();
@@ -2071,6 +2158,13 @@ impl App {
             let sz = Vec2::new(ins.w.unwrap_or(sz.x), ins.h.unwrap_or(sz.y));
             let sr = Rect::from_min_max(to_s(pos), to_s(pos + sz));
             match &o.kind {
+                // Vista desde arriba de los objetos 3D (el visor 3D llega en la etapa F7).
+                Kind::Mesh { color: [r, g, b], .. } => {
+                    painter.rect_filled(sr, 3., Color32::from_rgb(*r, *g, *b));
+                    painter.text(sr.center(), Align2::CENTER_CENTER, ic::CUBE, egui::FontId::proportional((sr.height() * 0.5).clamp(8., 28.)), Color32::from_black_alpha(140));
+                }
+                Kind::Light { color: [r, g, b], .. } => drop(painter.text(sr.center(), Align2::CENTER_CENTER, ic::LIGHTBULB, egui::FontId::proportional(22. * z), Color32::from_rgb(*r, *g, *b))),
+                Kind::Camera3d { .. } => drop(painter.text(sr.center(), Align2::CENTER_CENTER, ic::CAMERA, egui::FontId::proportional(22. * z), TEXT_SOFT)),
                 Kind::Box { color: [r, g, b], .. } => drop(painter.rect_filled(sr, 0., Color32::from_rgb(*r, *g, *b))),
                 Kind::Text { text, size, color: [r, g, b] } => {
                     painter.text(sr.min, Align2::LEFT_TOP, text, egui::FontId::proportional(size * z), Color32::from_rgb(*r, *g, *b));

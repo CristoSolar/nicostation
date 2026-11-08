@@ -78,6 +78,70 @@ pub struct Scene {
     /// Lógica en nodos (ver `nodos.rs`); se compila a eventos que van después de `events`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graphs: Vec<crate::nodos::Graph>,
+    /// Escena 3D: se juega con el reproductor 3D. Las instancias usan x, y, z como posición
+    /// (Y hacia arriba, en metros) y `angle`/`pitch`/`roll` como giros en grados.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dim3: bool,
+    /// Cielo, luz ambiente, niebla y post-proceso de una escena 3D.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<Environment>,
+}
+
+/// Entorno de una escena 3D (como WorldEnvironment de Godot).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Environment {
+    /// Cielo procedural: color arriba, en el horizonte y del suelo.
+    #[serde(default = "sky_top")]
+    pub sky_top: [u8; 3],
+    #[serde(default = "sky_horizon")]
+    pub sky_horizon: [u8; 3],
+    #[serde(default = "sky_ground")]
+    pub sky_ground: [u8; 3],
+    /// Imagen HDR del cielo (opcional): ilumina y se refleja en los materiales.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sky_image: String,
+    /// Cuánta luz da el cielo a toda la escena.
+    #[serde(default = "one")]
+    pub ambient: f32,
+    /// Niebla: color y distancias donde empieza y donde tapa todo (0 = sin niebla).
+    #[serde(default)]
+    pub fog_color: [u8; 3],
+    #[serde(default)]
+    pub fog_start: f32,
+    #[serde(default)]
+    pub fog_end: f32,
+    #[serde(default = "yes")]
+    pub glow: bool,
+    #[serde(default = "yes")]
+    pub ssao: bool,
+    /// linear, filmic, aces o agx.
+    #[serde(default = "filmic")]
+    pub tonemap: String,
+    /// Brillo general (exposición).
+    #[serde(default = "one")]
+    pub exposure: f32,
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("entorno por defecto")
+    }
+}
+
+fn sky_top() -> [u8; 3] {
+    [92, 140, 214]
+}
+fn sky_horizon() -> [u8; 3] {
+    [200, 214, 230]
+}
+fn sky_ground() -> [u8; 3] {
+    [60, 56, 52]
+}
+fn one() -> f32 {
+    1.
+}
+fn filmic() -> String {
+    "filmic".into()
 }
 
 fn default_layers() -> Vec<Layer> {
@@ -100,6 +164,7 @@ fn yes() -> bool {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Default)]
 pub struct Instance {
     pub obj: String,
     pub x: f32,
@@ -115,6 +180,14 @@ pub struct Instance {
     pub w: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub h: Option<f32>,
+    /// Profundidad propia (3D).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub d: Option<f32>,
+    /// Giros 3D en grados: `angle` es alrededor del eje vertical; pitch inclina hacia arriba/abajo; roll de costado.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pitch: f32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub roll: f32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vars: Vars,
 }
@@ -154,6 +227,58 @@ pub enum Kind {
     },
     /// Rectángulo de color (prototipos sin imágenes).
     Box { w: f32, h: f32, color: [u8; 3] },
+    /// Objeto 3D con forma y material (escenas 3D). Su posición x, y, z es el centro.
+    Mesh {
+        #[serde(default)]
+        shape: Shape3,
+        /// Modelo glTF (.glb/.gltf) cuando shape = model.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        model: String,
+        /// Tamaño en metros (ancho, alto, profundidad).
+        #[serde(default = "unit3")]
+        size: [f32; 3],
+        #[serde(default = "white")]
+        color: [u8; 3],
+        /// Material PBR, como StandardMaterial3D de Godot: 0 = no metálico, 1 = metal.
+        #[serde(default)]
+        metallic: f32,
+        /// 0 = espejo, 1 = mate.
+        #[serde(default = "half")]
+        roughness: f32,
+        /// Imagen que envuelve la forma (opcional).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        texture: String,
+        /// Color que brilla solo (con glow se ve como luz).
+        #[serde(default, skip_serializing_if = "is_black")]
+        emission: [u8; 3],
+    },
+    /// Luz 3D: sol (direccional), puntual o foco. Apunta según angle/pitch.
+    Light {
+        #[serde(default)]
+        light: LightKind,
+        #[serde(default = "white")]
+        color: [u8; 3],
+        #[serde(default = "one")]
+        energy: f32,
+        /// Alcance en metros (puntual y foco).
+        #[serde(default = "ten")]
+        range: f32,
+        /// Apertura del foco en grados.
+        #[serde(default = "spot_angle")]
+        spot_angle: f32,
+        #[serde(default = "yes")]
+        shadows: bool,
+    },
+    /// Cámara 3D: la primera instancia es la que mira el juego.
+    Camera3d {
+        /// Campo de visión vertical en grados.
+        #[serde(default = "fov")]
+        fov: f32,
+        #[serde(default = "near")]
+        near: f32,
+        #[serde(default = "far")]
+        far: f32,
+    },
     /// Mapa de baldosas: una grilla pintada con las baldosas de una imagen (tileset).
     /// Con el comportamiento `platform`, cada baldosa sólida es suelo o pared.
     Tilemap {
@@ -175,6 +300,54 @@ pub enum Kind {
 
 fn d32() -> f32 {
     32.
+}
+fn unit3() -> [f32; 3] {
+    [1., 1., 1.]
+}
+fn half() -> f32 {
+    0.5
+}
+fn ten() -> f32 {
+    10.
+}
+fn spot_angle() -> f32 {
+    45.
+}
+fn fov() -> f32 {
+    70.
+}
+fn near() -> f32 {
+    0.05
+}
+fn far() -> f32 {
+    4000.
+}
+fn is_black(c: &[u8; 3]) -> bool {
+    *c == [0, 0, 0]
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Shape3 {
+    #[default]
+    Cube,
+    Sphere,
+    Plane,
+    Capsule,
+    Cylinder,
+    Cone,
+    /// Modelo glTF.
+    Model,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LightKind {
+    /// Luz del sol: llega paralela desde lejos, ilumina toda la escena.
+    #[default]
+    Sun,
+    Point,
+    Spot,
 }
 
 impl Kind {

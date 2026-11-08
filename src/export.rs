@@ -49,6 +49,7 @@ pub fn assets(p: &Project) -> BTreeSet<String> {
             Kind::Tilemap { tileset, .. } => {
                 out.insert(tileset.clone());
             }
+            Kind::Mesh { model, texture, .. } => out.extend([model, texture].into_iter().filter(|f| !f.is_empty()).cloned()),
             _ => {}
         }
     }

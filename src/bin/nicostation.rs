@@ -456,6 +456,8 @@ async fn game() {
                 let mul = |c: [u8; 3]| Color::from_rgba((c[0] as u16 * tr as u16 / 255) as u8, (c[1] as u16 * tg as u16 / 255) as u8, (c[2] as u16 * tb as u16 / 255) as u8, alpha);
                 let c = to_screen(o.cx(), o.cy());
                 match &def.kind {
+                    // Los objetos 3D los dibuja el reproductor 3D.
+                    Kind::Mesh { .. } | Kind::Light { .. } | Kind::Camera3d { .. } => {}
                     Kind::Box { color, .. } => draw_rectangle_ex(c.x, c.y, o.w * k, o.h * k, DrawRectangleParams {
                         offset: vec2(0.5, 0.5),
                         rotation: o.angle.to_radians(),

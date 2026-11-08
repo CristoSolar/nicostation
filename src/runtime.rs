@@ -70,6 +70,11 @@ pub struct Inst {
     pub tiles: Vec<i32>,
     /// Se dibuja (las invisibles igual chocan y corren sus eventos).
     pub visible: bool,
+    /// 3D: profundidad y giros (pitch inclina, roll de costado; `angle` gira alrededor del eje vertical).
+    pub d: f32,
+    pub base_d: f32,
+    pub pitch: f32,
+    pub roll: f32,
     /// Color que multiplica al dibujo (blanco = sin cambio).
     pub tint: [u8; 3],
     /// Tamaño original, para scale_x / scale_y.
@@ -172,6 +177,8 @@ pub struct World {
     pub cmds: Vec<Cmd>,
     /// Partida guardada (la carga el reproductor al empezar; sobrevive a cerrar el juego).
     pub storage: Vars,
+    /// La escena actual es 3D.
+    pub dim3: bool,
     tasks: Vec<Task>,
     types: HashMap<String, ObjectDef>,
     timers: HashMap<String, f64>,
@@ -213,6 +220,7 @@ impl World {
             input: Input::default(),
             cmds: vec![],
             storage: Vars::new(),
+            dim3: false,
             tasks: vec![],
             types: HashMap::new(),
             timers: HashMap::new(),
@@ -258,6 +266,7 @@ impl World {
         self.scene = p.scenes.iter().position(|s| s.name == name).unwrap_or(0);
         let sc = &p.scenes[self.scene];
         self.types = p.objects_of(sc).map(|o| (o.name.clone(), o.clone())).collect();
+        self.dim3 = sc.dim3;
         self.insts.clear();
         self.vars = sc.vars.clone();
         self.timers.clear();
@@ -281,6 +290,8 @@ impl World {
             me.z = i.z;
             if let Some(w) = i.w { me.w = w }
             if let Some(h) = i.h { me.h = h }
+            if let Some(d) = i.d { me.d = d }
+            (me.pitch, me.roll) = (i.pitch, i.roll);
             me.vars.extend(i.vars.clone());
         }
     }
@@ -292,6 +303,12 @@ impl World {
             Kind::Text { text, size, .. } => (text.chars().count() as f32 * size * 0.5, *size, text.clone()),
             Kind::Box { w, h, .. } => (*w, *h, String::new()),
             Kind::Tilemap { tile, cols, rows, .. } => (*cols as f32 * tile, *rows as f32 * tile, String::new()),
+            Kind::Mesh { size, .. } => (size[0], size[1], String::new()),
+            Kind::Light { .. } | Kind::Camera3d { .. } => (0.5, 0.5, String::new()),
+        };
+        let d = match &t.kind {
+            Kind::Mesh { size, .. } => size[2],
+            _ => 0.5,
         };
         let tiles = match &t.kind {
             Kind::Tilemap { cols, rows, data, .. } => (0..cols * rows).map(|k| data.get(k).copied().unwrap_or(-1)).collect(),
@@ -314,6 +331,8 @@ impl World {
             tint: [255, 255, 255],
             base_w: w,
             base_h: h,
+            d,
+            base_d: d,
             ..Default::default()
         });
         self.insts.len() - 1
@@ -345,9 +364,36 @@ impl World {
         out
     }
 
+    /// Choques 3D: cajas alineadas a los ejes, centradas en (x, y, z) con tamaño (w, h, d).
+    // ponytail: AABB sin rotación hasta la física 3D (rapier3d, etapa F4).
+    fn hits3(&self, mine: &[usize], others: &[usize], dist: f32) -> Vec<(usize, usize)> {
+        let mut out = vec![];
+        for &i in mine {
+            let a = &self.insts[i];
+            for &j in others {
+                let b = &self.insts[j];
+                if i == j {
+                    continue;
+                }
+                let hit = if dist > 0. {
+                    ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt() < dist
+                } else {
+                    (a.x - b.x).abs() * 2. < a.w + b.w && (a.y - b.y).abs() * 2. < a.h + b.h && (a.z - b.z).abs() * 2. < a.d + b.d
+                };
+                if hit {
+                    out.push((i, j));
+                }
+            }
+        }
+        out
+    }
+
     /// Pares (de `mine`, de `others`) que se tocan (o están a menos de `dist` entre centros si dist > 0).
     /// Grilla espacial de celdas de 128 px: cada instancia solo se compara con las de sus celdas.
     fn hits(&self, mine: &[usize], others: &[usize], dist: f32) -> Vec<(usize, usize)> {
+        if self.dim3 {
+            return self.hits3(mine, others, dist);
+        }
         type Poly = [(f32, f32); 4];
         let bounds = |s: &[Poly]| s.iter().flatten().fold((f32::MAX, f32::MAX, f32::MIN, f32::MIN), |b, p| (b.0.min(p.0), b.1.min(p.1), b.2.max(p.0), b.3.max(p.1)));
         const CELL: f32 = 128.;
@@ -931,6 +977,35 @@ impl World {
                 let (to, secs) = (num(self, a(0), sol, None).max(0.01), num(self, a(1), sol, None));
                 self.zoom_tween = Some((self.zoom, to, 0., secs.max(0.)));
             }
+            "move_forward" => {
+                // Adelante = -Z girado por `angle` (como en Godot); con pitch también sube o baja.
+                for i in self.pick(a(0), sol) {
+                    let dist = num(self, a(1), sol, Some(i));
+                    let me = &mut self.insts[i];
+                    let (yaw, pitch) = (me.angle.to_radians(), me.pitch.to_radians());
+                    me.x -= yaw.sin() * pitch.cos() * dist;
+                    me.y += pitch.sin() * dist;
+                    me.z -= yaw.cos() * pitch.cos() * dist;
+                }
+            }
+            "move_right" => {
+                for i in self.pick(a(0), sol) {
+                    let dist = num(self, a(1), sol, Some(i));
+                    let me = &mut self.insts[i];
+                    let yaw = me.angle.to_radians();
+                    me.x += yaw.cos() * dist;
+                    me.z -= yaw.sin() * dist;
+                }
+            }
+            "look_at3" => {
+                for i in self.pick(a(0), sol) {
+                    let (x, y, z) = (num(self, a(1), sol, Some(i)), num(self, a(2), sol, Some(i)), num(self, a(3), sol, Some(i)));
+                    let me = &mut self.insts[i];
+                    let (dx, dy, dz) = (x - me.x, y - me.y, z - me.z);
+                    me.angle = (-dx).atan2(-dz).to_degrees();
+                    me.pitch = dy.atan2(dx.hypot(dz)).to_degrees();
+                }
+            }
             "set_alarm" => {
                 for i in self.pick(a(0), sol) {
                     let secs = num(self, a(2), sol, Some(i));
@@ -1007,6 +1082,10 @@ impl World {
             "z" => n(me.z),
             "speed" => n(me.vx.hypot(me.vy)),
             "visible" => Value::Num(me.visible as i32 as f64),
+            "d" => n(me.d),
+            "pitch" => n(me.pitch),
+            "roll" => n(me.roll),
+            "scale_z" => n(if me.base_d != 0. { me.d / me.base_d } else { 1. }),
             "scale_x" => n(if me.base_w != 0. { me.w / me.base_w } else { 1. }),
             "scale_y" => n(if me.base_h != 0. { me.h / me.base_h } else { 1. }),
             "tint" => Value::Str(format!("#{:02x}{:02x}{:02x}", me.tint[0], me.tint[1], me.tint[2])),
@@ -1017,6 +1096,7 @@ impl World {
     }
 
     pub(crate) fn put(&mut self, i: usize, p: &str, v: Value) {
+        let dim3 = self.dim3;
         let me = &mut self.insts[i];
         let f = v.num() as f32;
         match p {
@@ -1031,7 +1111,13 @@ impl World {
             "z" => me.z = f,
             "text" => me.text = v.text(),
             "visible" => me.visible = v.truthy(),
+            "d" => me.d = f,
+            "pitch" => me.pitch = f,
+            "roll" => me.roll = f,
+            "scale_z" => me.d = me.base_d * f,
             // Escala alrededor del centro, como image_xscale de GameMaker.
+            "scale_x" if dim3 => me.w = me.base_w * f,
+            "scale_y" if dim3 => me.h = me.base_h * f,
             "scale_x" => {
                 let c = me.cx();
                 me.w = me.base_w * f;
@@ -2025,6 +2111,37 @@ mod tests {
         assert_eq!(w.get(2, "scale_x"), Value::Num(2.));
         assert_eq!(parse_color("verde"), Some([70, 200, 90]));
         assert_eq!(parse_color("#12ab"), None);
+    }
+
+    #[test]
+    fn escena_3d() {
+        let mut w = world(r#"{"name":"t","width":800,"height":600,"first_scene":"S","scenes":[{"name":"S","dim3":true,
+            "objects":[{"name":"Jugador","type":"mesh","shape":"capsule","size":[1,2,1],"color":[200,80,80]},
+                       {"name":"Caja","type":"mesh","size":[2,2,2]},
+                       {"name":"Sol","type":"light","light":"sun"},{"name":"Cam","type":"camera3d"}],
+            "instances":[{"obj":"Jugador","x":0,"y":1,"z":0},{"obj":"Caja","x":0,"y":1,"z":-4},{"obj":"Sol","x":0,"y":10,"z":0,"pitch":-60},
+                         {"obj":"Cam","x":0,"y":3,"z":6}],
+            "events":[{"conds":[{"op":"key_down","args":["Up"]}],"acts":[{"op":"move_forward","args":["Jugador","5 * dt"]}]},
+                      {"conds":[{"op":"collides","args":["Jugador","Caja"]}],"acts":[{"op":"set_var","args":["choco","1"]}]},
+                      {"acts":[{"op":"look_at3","args":["Cam","Jugador.x","Jugador.y","Jugador.z"]}]}]}]}"#);
+        assert!(w.dim3);
+        assert_eq!((w.insts[0].w, w.insts[0].h, w.insts[0].d), (1., 2., 1.));
+        assert_eq!(w.insts[2].pitch, -60.);
+        let mut up = Input::default();
+        up.down.insert("Up".into());
+        for _ in 0..30 {
+            w.step(1. / 60., up.clone());
+        }
+        // Adelante es -Z: avanzó 2.5 m hacia la caja y todavía no la toca (borde en z = -3, jugador en -2.5 ± 0.5).
+        assert!((w.insts[0].z + 2.5).abs() < 0.05 && w.insts[0].x.abs() < 1e-4, "z = {}", w.insts[0].z);
+        assert!(!w.vars.contains_key("choco"));
+        for _ in 0..12 {
+            w.step(1. / 60., up.clone());
+        }
+        assert_eq!(w.vars["choco"], Value::Num(1.));
+        // La cámara mira al jugador: hacia -Z (ángulo 0) y hacia abajo.
+        let cam = &w.insts[3];
+        assert!(cam.angle.abs() < 1. && cam.pitch < -5., "cámara {} {}", cam.angle, cam.pitch);
     }
 
     #[test]
