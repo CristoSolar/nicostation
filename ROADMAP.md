@@ -43,3 +43,18 @@ GameMaker, sin perder el modo fácil para niños. Cada fase deja todo compilando
 ## Fase E: publicar
 - [ ] Exportar a Windows, macOS y Android; publicación a itch.io.
 - [ ] Manual de usuario y referencia de cada bloque.
+
+## Fase F: 3D (ver docs/godot-3d.md y docs/tecnologia-3d.md)
+Tecnología elegida tras probarla: kiss3d 0.47 (render wgpu, el mismo que usa el editor), rapier3d 0.36 (física),
+glTF (modelos; FBX/OBJ se convierten al importar), kira 0.12 (audio 3D). Plan B: Bevy detrás del mismo módulo `render3d`.
+Los juegos 3D usan un reproductor propio (`nicostation3d`); los 2D siguen en el actual. Las hojas de eventos y los
+nodos programan ambos.
+- [ ] F1 Modelo 3D en el proyecto: escenas 3D, nodos con transformación jerárquica, mallas, luces, cámara, entorno.
+- [ ] F2 Reproductor `nicostation3d`: ventana, entrada y audio fuera de macroquad; mismo `World` y eventos.
+- [ ] F3 Render «aspecto Godot»: PBR, sombras en cascadas, cielo con luz ambiente, HDR, glow, tonemap, SSAO.
+- [ ] F4 Física: cuerpos estáticos/rígidos/cinemáticos, áreas, raycast; comportamiento `character3d` (move_and_slide).
+- [ ] F5 Importar glTF con materiales, esqueletos y animaciones; reproducción y mezcla de animaciones.
+- [ ] F6 Bloques 3D: mover hacia adelante, rotar hacia, raycast golpea, animación terminó, en el suelo, etc.
+- [ ] F7 Editor 3D: visor con manijas mover/rotar/escalar, cámara libre (clic derecho + WASD), árbol de escena.
+- [ ] F8 Exportar 3D (escritorio de un archivo y web; probar WebGPU/WebGL2 en navegadores reales).
+- [ ] F9 Paridad: partículas, GridMap, CSG, máquina de estados de animación, navegación, lightmaps, efectos.
