@@ -100,11 +100,15 @@ fn tools() -> Vec<J> {
         t("proyecto_configurar", "Cambia nombre, tamaño, escena inicial o variables globales.",
             json!({"nombre": s("Nombre"), "ancho": n("Ancho px"), "alto": n("Alto px"), "escena_inicial": s("Escena con la que arranca"),
                    "globales": o("Variables globales a poner (número, texto o booleano); se combinan con las existentes")}), &[]),
-        t("escena_crear", "Crea una escena.", json!({"nombre": s("Nombre"), "fondo": a("Color [r,g,b]"),
+        t("escena_crear", "Crea una escena (2D, o 3D con dim3=true).", json!({"nombre": s("Nombre"), "fondo": a("Color [r,g,b]"),
+            "dim3": json!({"type": "boolean", "description": "Escena 3D (se juega con nicostation3d)"}),
+            "entorno": o("Entorno 3D: cielo, luz ambiente, niebla, glow, ssao, tonemap, exposure (ver catalogo)"),
             "capas": a("Capas [{name, visible, fixed}]; \"\" es la base, fixed=true no sigue a la cámara (HUD)")}), &["nombre"]),
         t("escena_editar", "Cambia nombre, fondo, capas, variables o grupos de una escena. Renombrar actualiza las referencias.",
             json!({"escena": s("Escena"), "nuevo_nombre": s("Nuevo nombre"), "fondo": a("[r,g,b]"), "capas": a("Reemplaza las capas"),
-                   "variables": o("Variables de escena a poner (se combinan)"), "grupos": o("Grupos {nombre: [objetos]} a poner (se combinan)")}), &["escena"]),
+                   "variables": o("Variables de escena a poner (se combinan)"), "grupos": o("Grupos {nombre: [objetos]} a poner (se combinan)"),
+                   "dim3": json!({"type": "boolean", "description": "Convertir en escena 3D (true) o 2D (false)"}),
+                   "entorno": o("Entorno 3D (reemplaza el actual)")}), &["escena"]),
         t("escena_borrar", "Borra una escena.", json!({"escena": s("Escena")}), &["escena"]),
         t("objeto_poner", "Crea o reemplaza (por nombre) un objeto: sprite, text o box, con comportamientos y variables. Sin escena = objeto global.",
             json!({"escena": s("Escena (omitir = global)"), "objeto": o("Objeto, p. ej. {\"name\":\"Heroe\",\"type\":\"sprite\",\"animations\":[{\"name\":\"quieto\",\"frames\":[\"img/heroe.png\"]}],\"behaviors\":[{\"type\":\"platformer\"}]}")}), &["objeto"]),
@@ -299,6 +303,9 @@ impl Srv {
                 let mut s: Scene = serde_json::from_value(json!({"name": name})).map_err(|e| e.to_string())?;
                 if let Some(c) = opt(a, "fondo")? { s.background = c }
                 if let Some(l) = opt(a, "capas")? { s.layers = l }
+                if let Some(d) = opt(a, "dim3")? { s.dim3 = d }
+                if let Some(e) = opt(a, "entorno")? { s.environment = Some(e) }
+                if s.dim3 && s.environment.is_none() { s.environment = Some(Environment::default()) }
                 p.scenes.push(s);
                 Ok(format!("Escena «{name}» creada."))
             }),
@@ -313,6 +320,9 @@ impl Srv {
                 if let Some(l) = opt(a, "capas")? { s.layers = l }
                 if let Some(v) = opt::<Vars>(a, "variables")? { s.vars.extend(v) }
                 if let Some(g) = opt::<BTreeMap<String, Vec<String>>>(a, "grupos")? { s.groups.extend(g) }
+                if let Some(d) = opt(a, "dim3")? { s.dim3 = d }
+                if let Some(e) = opt(a, "entorno")? { s.environment = Some(e) }
+                if s.dim3 && s.environment.is_none() { s.environment = Some(Environment::default()) }
                 if let Some(n) = new {
                     s.name = n.clone();
                     if p.first_scene == name { p.first_scene = n.clone() }
