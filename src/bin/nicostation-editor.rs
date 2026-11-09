@@ -24,9 +24,10 @@
 //! la escena»), `vista-abajo` (la vista previa abajo, con la pestaña Eventos), `recarga` (cambia el fondo y agrega una moneda mientras
 //! juega: se ve «Cambios aplicados»), `jugar` (sin ensayo, con el teclado en el juego: probar con `--tecla Space`),
 //! `si-no` (agrega un «si no, cuando» y un «si no» debajo del primer evento),
-//! `nodos` (Eventos en vista Nodos), `nodos-convertido` (pasa la hoja de la escena a un grafo y lo muestra),
-//! `nodos-paleta` (lo mismo, con el buscador de nodos abierto), `nodos-error` (lo mismo, con dos nodos rotos a propósito
-//! para ver los errores marcados), `nodos-eventos` (con el panel «Eventos generados»), `nodos-hoja` (la hoja vista como nodos).
+//! `nodos` (Eventos en vista Nodos: la hoja de la escena como nodos, editable), `nodos-borrador` (lo mismo, con una acción
+//! nueva sin completar metida en un camino: queda como borrador y la hoja no cambia), `nodos-eventos` (con la hoja al lado),
+//! `nodos-convertido` (pasa la hoja a un grafo aparte y lo muestra), `nodos-paleta` (lo mismo, con el buscador de nodos
+//! abierto), `nodos-error` (lo mismo, con dos nodos rotos a propósito para ver los errores marcados).
 //! Estudio 2D: `particulas` (emisor nuevo con el editor de partículas), `fondo` (fondo que se repite y se mueve),
 //! `origen` / `mascara` (editor de origen o de máscara del primer sprite), `ajustes` (Ajustes del juego), `recursos`
 //! (explorador de archivos), `multi` (varias instancias elegidas, con manijas y alinear), `buscar` (buscar en eventos),
@@ -522,7 +523,7 @@ fn ren_all(p: &mut Project, scene: Option<usize>, t: P, old: &str, new: &str) {
     for (i, s) in p.scenes.iter_mut().enumerate() {
         if scene.is_none_or(|k| k == i) {
             ren_evs(&mut s.events, t, old, new);
-            s.graphs.iter_mut().for_each(|g| nodos::ren_grafo(g, t, old, new, ren_expr));
+            s.graphs.iter_mut().chain([&mut s.node_drafts]).for_each(|g| nodos::ren_grafo(g, t, old, new, ren_expr));
             if t == P::Object {
                 s.instances.iter_mut().filter(|n| n.obj == old).for_each(|n| n.obj = new.into());
                 s.groups.values_mut().flatten().filter(|o| *o == old).for_each(|o| *o = new.into());
@@ -531,7 +532,7 @@ fn ren_all(p: &mut Project, scene: Option<usize>, t: P, old: &str, new: &str) {
     }
     if scene.is_none() {
         p.functions.iter_mut().for_each(|f| ren_evs(&mut f.events, t, old, new));
-        p.functions.iter_mut().filter_map(|f| f.graph.as_mut()).for_each(|g| nodos::ren_grafo(g, t, old, new, ren_expr));
+        p.functions.iter_mut().flat_map(|f| f.graph.iter_mut().chain([&mut f.node_drafts])).for_each(|g| nodos::ren_grafo(g, t, old, new, ren_expr));
     }
 }
 
@@ -3633,11 +3634,11 @@ impl App {
                 for (k, s) in self.p.scenes.iter_mut().enumerate() {
                     if global || k == sc {
                         cajitas::ren_var(&mut s.events, &old, &new);
-                        s.graphs.iter_mut().for_each(|g| nodos::ren_var_grafo(g, &old, &new));
+                        s.graphs.iter_mut().chain([&mut s.node_drafts]).for_each(|g| nodos::ren_var_grafo(g, &old, &new));
                     }
                 }
                 self.p.functions.iter_mut().for_each(|f| cajitas::ren_var(&mut f.events, &old, &new));
-                self.p.functions.iter_mut().filter_map(|f| f.graph.as_mut()).for_each(|g| nodos::ren_var_grafo(g, &old, &new));
+                self.p.functions.iter_mut().flat_map(|f| f.graph.iter_mut().chain([&mut f.node_drafts])).for_each(|g| nodos::ren_var_grafo(g, &old, &new));
                 self.say(Nivel::Ok, format!("La cajita «{old}» ahora se llama «{new}» (también en los bloques)"));
             }
             None => {}
@@ -3668,7 +3669,7 @@ impl App {
             ui.add_space(4.);
             if ui.button(it(ic::PLUS, "Nueva función")).clicked() {
                 let n = (1..).map(|k| format!("funcion{k}")).find(|n| !self.p.functions.iter().any(|f| &f.name == n)).unwrap();
-                self.p.functions.push(Function { name: n, is_condition: false, params: vec![], events: vec![], graph: None });
+                self.p.functions.push(Function { name: n, is_condition: false, params: vec![], events: vec![], ..Default::default() });
                 self.func = self.p.functions.len() - 1;
             }
             let fi = self.func;

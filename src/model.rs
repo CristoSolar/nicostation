@@ -103,6 +103,13 @@ pub struct Scene {
     /// Lógica en nodos (ver `nodos.rs`); se compila a eventos que van después de `events`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graphs: Vec<crate::nodos::Graph>,
+    /// Hoja vista como nodos (solo para el editor): dónde quedó cada nodo, por clave (ver `nodos::sheet_load`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub node_layout: crate::nodos::Layout,
+    /// Hoja vista como nodos (solo para el editor): nodos que todavía no son eventos (sin conectar o incompletos).
+    /// El motor y la revisión no los usan.
+    #[serde(default, skip_serializing_if = "crate::nodos::Graph::is_empty")]
+    pub node_drafts: crate::nodos::Graph,
     /// Escena 3D: se juega con el reproductor 3D. Las instancias usan x, y, z como posición
     /// (Y hacia arriba, en metros) y `angle`/`pitch`/`roll` como giros en grados.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -781,7 +788,7 @@ impl Instr {
 }
 
 /// Acción o condición propia hecha con eventos. Los parámetros llegan como variables locales.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Function {
     pub name: String,
     /// true = se usa como condición; devuelve con la acción `return`.
@@ -793,6 +800,11 @@ pub struct Function {
     /// Lógica en nodos; se compila y se agrega después de `events`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<crate::nodos::Graph>,
+    /// Como en `Scene`: la hoja del bloque vista como nodos (solo para el editor).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub node_layout: crate::nodos::Layout,
+    #[serde(default, skip_serializing_if = "crate::nodos::Graph::is_empty")]
+    pub node_drafts: crate::nodos::Graph,
 }
 
 impl Project {

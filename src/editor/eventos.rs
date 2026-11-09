@@ -364,12 +364,13 @@ fn frase(i: &Instr) -> LayoutJob {
     if i.not {
         push("NO ", WARN, sb(14.));
     }
-    let Some(m) = catalog::meta(&i.op) else {
+    let Some(_) = catalog::meta(&i.op) else {
         push(&format!("¿{}? {:?}", i.op, i.args), DANGER, f);
         return j;
     };
     let arg = |n: usize| i.args.get(n).cloned().unwrap_or_default();
-    let s = m.sentence;
+    let plantilla = catalog::template(i);
+    let s = plantilla.as_str();
     let (mut k, mut lit) = (0, String::new());
     while k < s.len() {
         let rest = &s[k..];

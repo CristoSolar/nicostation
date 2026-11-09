@@ -247,13 +247,11 @@ pub fn renombrar_en_proyecto(p: &mut Project, viejo: &str, nuevo: &str) -> usize
     for (a, b) in cambios {
         for s in &mut p.scenes {
             ren_eventos(&mut s.events, &a, &b);
-            s.graphs.iter_mut().for_each(|g| super::nodos::ren_grafo(g, P::File, &a, &b, |x, _, _| x.to_string()));
+            s.graphs.iter_mut().chain([&mut s.node_drafts]).for_each(|g| super::nodos::ren_grafo(g, P::File, &a, &b, |x, _, _| x.to_string()));
         }
         for fu in &mut p.functions {
             ren_eventos(&mut fu.events, &a, &b);
-            if let Some(g) = &mut fu.graph {
-                super::nodos::ren_grafo(g, P::File, &a, &b, |x, _, _| x.to_string());
-            }
+            fu.graph.iter_mut().chain([&mut fu.node_drafts]).for_each(|g| super::nodos::ren_grafo(g, P::File, &a, &b, |x, _, _| x.to_string()));
         }
     }
     n

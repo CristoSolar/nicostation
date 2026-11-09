@@ -1,5 +1,7 @@
 //! Vista «Nodos» de la hoja de eventos: un lienzo infinito con nodos y cables, como los Blueprints.
-//! Lo que se dibuja es un `nicostation::nodos::Graph` del proyecto; el motor lo compila a eventos.
+//! Lo que se dibuja es un `nicostation::nodos::Graph`: la hoja misma vista como nodos (por defecto; se edita
+//! igual que la hoja y cada cambio va directo a los eventos, ver `nodos::sheet_save`) o un grafo aparte del
+//! proyecto, que el motor compila y agrega después de la hoja.
 //!
 //! Lienzo: rueda = zoom, arrastrar con el botón derecho o el del medio = mover la vista, arrastrar con el
 //! izquierdo en el fondo = elegir varios. Clic derecho, Espacio o Tab = agregar un nodo. Arrastrar desde un pin
@@ -87,14 +89,34 @@ pub struct Vista {
     menu: Option<(NodeId, Pos2)>,
     clip: Option<Graph>,
     pub ver_eventos: bool,
-    pub ver_hoja: bool,
     pub encuadrar: bool,
-    /// Hoja vista como nodos (solo para mirar): JSON de los eventos y el grafo.
-    pub prev: Option<(u64, Graph)>,
+    /// Mirando un grafo aparte (`grafo`) en vez de la hoja.
+    pub aparte: bool,
+    /// La hoja vista como nodos, tal como se está editando.
+    pub vivo: Option<Vivo>,
+    /// Ya se cerró la pista de «aquí también puedes editar».
+    pub pista_vista: Option<bool>,
     pub cache: Cache,
     key: String,
     /// Errores a mostrar: se alterna con un clic en la barra de estado.
     ir_error: usize,
+}
+
+/// La hoja (de una escena o un bloque) vista como nodos, mientras se edita.
+pub struct Vivo {
+    /// De qué hoja es (`App::clave`).
+    pub key: String,
+    /// Huella de los eventos, lugares y borradores de los que salió: si cambian (por la hoja, deshacer...) se rearma.
+    pub huella: u64,
+    pub g: Graph,
+    /// Nodos que vienen de la hoja (los demás son borradores).
+    pub canon: BTreeSet<NodeId>,
+    /// Nodos que llegan a los eventos (los demás son borradores).
+    pub usados: BTreeSet<NodeId>,
+    /// Cómo quedó al armarlo (si `g` cambia, hay que guardar).
+    pub base: Graph,
+    /// Si la hoja tiene algo que los nodos no pueden mostrar igual: qué (y entonces solo se mira).
+    pub aviso: Option<String>,
 }
 
 pub struct Cx<'a> {
@@ -105,6 +127,10 @@ pub struct Cx<'a> {
     /// Clave del grafo (para recordar la cámara de cada uno).
     pub key: &'a str,
     pub solo_ver: bool,
+    /// Es la hoja vista como nodos: nodos que llegan a los eventos (el resto son borradores).
+    pub hoja: Option<&'a BTreeSet<NodeId>>,
+    /// Por qué solo se puede mirar.
+    pub aviso: Option<&'a str>,
 }
 
 #[derive(Default)]
@@ -141,7 +167,8 @@ fn node_color(n: &Node) -> Color32 {
         NodeKind::Event { op } if op.is_empty() => CAT_TIME,
         NodeKind::Event { op } | NodeKind::Cond { op } | NodeKind::Act { op } => facil::cat_op(op).color,
         NodeKind::Seq { .. } | NodeKind::Repeat | NodeKind::ForEach | NodeKind::While => FLOW_C,
-        NodeKind::Comment { .. } => TEXT_FAINT,
+        NodeKind::Comment { .. } | NodeKind::Group { .. } => TEXT_FAINT,
+        NodeKind::Note => WARN,
         NodeKind::Data { .. } => ng::data_out(n).map_or(CAT_VAR, pin_color),
     }
 }
@@ -171,7 +198,8 @@ fn node_icon(n: &Node) -> &'static str {
         NodeKind::Repeat => ic::REPEAT,
         NodeKind::ForEach => ic::STACK,
         NodeKind::While => ic::ARROWS_CLOCKWISE,
-        NodeKind::Comment { .. } => ic::NOTE,
+        NodeKind::Comment { .. } | NodeKind::Note => ic::NOTE,
+        NodeKind::Group { .. } => ic::FOLDER,
         NodeKind::Data { f } => data_icon(f),
     }
 }
@@ -192,7 +220,8 @@ fn node_help(n: &Node) -> String {
         NodeKind::Repeat => "Hace lo de «cada vez» varias veces seguidas; después sigue por «al terminar».".into(),
         NodeKind::ForEach => "Hace lo de «cada uno» una vez por cada copia del objeto, con esa copia elegida.".into(),
         NodeKind::While => "Repite lo de «mientras» hasta que sus «Si» dejen de cumplirse.".into(),
-        NodeKind::Comment { .. } => "Una nota para explicar algo. El juego no la usa.".into(),
+        NodeKind::Comment { .. } | NodeKind::Note => "Una nota para explicar algo. El juego no la usa.".into(),
+        NodeKind::Group { .. } => "Un grupo: los eventos que empiezan adentro del recuadro van juntos (y se pueden desactivar todos a la vez).".into(),
         NodeKind::Data { f } => ng::data_def(f).map_or(String::new(), |d| d.help.into()),
     }
 }
@@ -497,9 +526,15 @@ pub fn lienzo(ui: &mut Ui, g: &mut Graph, st: &mut Vista, cx: &Cx) -> Salida {
         let from_g = to_global.inverse();
         pointer = ui.input(|i| i.pointer.latest_pos()).map(|p| from_g * p);
         grid(ui, to_global.scaling);
-        // Recuadros de comentario, detrás de todo.
-        for n in g.nodes.iter_mut().filter(|n| matches!(n.kind, NodeKind::Comment { .. })) {
-            comentario(ui, n, &geos[&n.id], st.sel.contains(&n.id), edit_on, &mut acts);
+        // Recuadros (grupos y notas), detrás de todo; los más grandes primero.
+        let mut frames: Vec<usize> = (0..g.nodes.len()).filter(|&k| ng::is_frame(&g.nodes[k])).collect();
+        frames.sort_by(|a, b| {
+            let area = |k: &usize| geos[&g.nodes[*k].id].rect.area();
+            area(b).total_cmp(&area(a))
+        });
+        for k in frames {
+            let n = &mut g.nodes[k];
+            comentario(ui, n, &geos[&n.id], st.sel.contains(&n.id), edit_on, cx, &mut acts);
         }
         // Cables.
         let p = ui.painter().clone();
@@ -516,12 +551,13 @@ pub fn lienzo(ui: &mut Ui, g: &mut Graph, st: &mut Vista, cx: &Cx) -> Salida {
             }
         }
         // Nodos.
-        for n in g.nodes.iter_mut().filter(|n| !matches!(n.kind, NodeKind::Comment { .. })) {
+        for n in g.nodes.iter_mut().filter(|n| !ng::is_frame(n)) {
             let gm = &geos[&n.id];
             let nc = NodoCx {
                 sel: st.sel.contains(&n.id),
                 errs: probs.get(&n.id).map(|v| v.as_slice()).unwrap_or(&[]),
                 lejos: !reach.contains(&n.id),
+                borrador: cx.hoja.is_some_and(|u| !u.contains(&n.id)) && !matches!(n.kind, NodeKind::Data { .. }),
                 wired: &wired,
                 titles: &titles,
                 cx,
@@ -587,8 +623,8 @@ pub fn lienzo(ui: &mut Ui, g: &mut Graph, st: &mut Vista, cx: &Cx) -> Salida {
                     st.sel = BTreeSet::from([id]);
                 }
                 let mut ids: Vec<NodeId> = st.sel.iter().copied().collect();
-                // Mover un comentario lleva los nodos que tiene adentro.
-                for c in g.nodes.iter().filter(|n| st.sel.contains(&n.id) && matches!(n.kind, NodeKind::Comment { .. })) {
+                // Mover un recuadro lleva los nodos que tiene adentro.
+                for c in g.nodes.iter().filter(|n| st.sel.contains(&n.id) && ng::is_frame(n)) {
                     let cr = geos[&c.id].rect;
                     ids.extend(g.nodes.iter().filter(|n| n.id != c.id && cr.contains_rect(geos[&n.id].rect) && !ids.contains(&n.id)).map(|n| n.id).collect::<Vec<_>>());
                 }
@@ -671,7 +707,7 @@ pub fn lienzo(ui: &mut Ui, g: &mut Graph, st: &mut Vista, cx: &Cx) -> Salida {
             }
             Drag::Resize { id, last } => {
                 let delta = p - *last;
-                if let Some(NodeKind::Comment { w, h }) = g.nodes.iter_mut().find(|n| n.id == *id).map(|n| &mut n.kind) {
+                if let Some(NodeKind::Comment { w, h } | NodeKind::Group { w, h }) = g.nodes.iter_mut().find(|n| n.id == *id).map(|n| &mut n.kind) {
                     *w = (*w + delta.x).max(120.);
                     *h = (*h + delta.y).max(60.);
                 }
@@ -787,7 +823,7 @@ pub fn lienzo(ui: &mut Ui, g: &mut Graph, st: &mut Vista, cx: &Cx) -> Salida {
                 ui.set_width(384.);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(ic::GRAPH).size(30.).color(ACCENT));
-                    ui.label(RichText::new("Un grafo vacío").font(sb(17.)));
+                    ui.label(RichText::new(if cx.hoja.is_some() { "La hoja está vacía" } else { "Un grafo vacío" }).font(sb(17.)));
                     ui.label(RichText::new("Haz clic derecho (o aprieta Espacio) para agregar tu primer nodo. Empieza por un «Cuando», y une sus flechas con lo que quieres que pase.").color(TEXT_SOFT));
                     ui.add_space(6.);
                     if primary(ui, (on_accent(ic::PLUS), on_accent("Agregar nodo").font(sb(14.)))).clicked() {
@@ -810,6 +846,8 @@ struct NodoCx<'a> {
     sel: bool,
     errs: &'a [&'a str],
     lejos: bool,
+    /// En la hoja: todavía no llega a los eventos.
+    borrador: bool,
     wired: &'a HashMap<(NodeId, u8), NodeId>,
     titles: &'a HashMap<NodeId, String>,
     cx: &'a Cx<'a>,
@@ -833,6 +871,7 @@ fn nodo(ui: &mut Ui, n: &mut Node, gm: &Geo, nc: &NodoCx, acts: &mut Vec<A>) {
     if resp.secondary_clicked() && nc.edit_on {
         acts.push(A::Menu(n.id));
     }
+    let dbl = resp.double_clicked();
     let help = node_help(n);
     if !help.is_empty() {
         resp.on_hover_text(&help);
@@ -850,10 +889,16 @@ fn nodo(ui: &mut Ui, n: &mut Node, gm: &Geo, nc: &NodoCx, acts: &mut Vec<A>) {
         (2., DANGER)
     } else if nc.sel {
         (2., ACCENT)
+    } else if nc.borrador {
+        (1.5, WARN.gamma_multiply(0.8))
     } else {
         (1., if event { blend(col, SURFACE, 0.8) } else { BORDER_STRONG })
     };
     p.rect_stroke(r, 10, Stroke::new(bw, bc), egui::StrokeKind::Outside);
+    if nc.borrador {
+        let tag = if nc.errs.is_empty() { "borrador" } else { "borrador · falta algo" };
+        p.text(Pos2::new(r.left() + 4., r.top() - 4.), Align2::LEFT_BOTTOM, format!("{} {tag}", ic::PENCIL_LINE), FontId::proportional(12.), if nc.errs.is_empty() { WARN } else { facil::ROJO_TXT });
+    }
     // Cabecera: ícono y título.
     let left = r.left() + if gm.ein.is_some() { 18. } else { 12. };
     let right_pad = if !gm.outs.is_empty() || gm.dout.is_some() { 20. } else { 10. };
@@ -944,7 +989,21 @@ fn nodo(ui: &mut Ui, n: &mut Node, gm: &Geo, nc: &NodoCx, acts: &mut Vec<A>) {
             }
         }
     }
-    // Errores debajo del nodo.
+    // Texto de una nota en un camino.
+    if let NodeKind::Note = n.kind {
+        let tr = Rect::from_min_max(Pos2::new(r.left() + 12., r.top() + ng::HEAD_H + 2.), Pos2::new(r.right() - 10., r.bottom() - 4.));
+        let g = p.layout(n.args.first().cloned().unwrap_or_default(), FontId::proportional(13.), TEXT_SOFT, tr.width());
+        p.with_clip_rect(tr.intersect(ui.clip_rect())).galley(tr.min, g, TEXT_SOFT);
+        if nc.edit_on && dbl {
+            acts.push(A::Edit(n.id, 0, None, Rect::from_min_size(r.left_bottom(), Vec2::ZERO)));
+        }
+    }
+    // Errores debajo del nodo (o, en la hoja, por qué todavía es un borrador).
+    let suelto = nc.borrador && nc.errs.is_empty() && nc.lejos;
+    if suelto {
+        let t = if cx.facil { "Conéctalo a un «Cuando» para que pase a la hoja" } else { "Sin conectar: todavía no está en la hoja" };
+        p.text(Pos2::new(r.left() + 2., r.bottom() + 6.), Align2::LEFT_TOP, t, FontId::proportional(12.), WARN.gamma_multiply(0.85));
+    }
     if !nc.errs.is_empty() {
         let txt = nc.errs.iter().take(3).map(|e| format!("{} {e}", ic::WARNING)).collect::<Vec<_>>().join("\n");
         let g = p.layout(txt, FontId::proportional(12.5), facil::ROJO_TXT, r.width() + 40.);
@@ -978,6 +1037,7 @@ fn valor(ui: &mut Ui, n: &mut Node, k: usize, s: &ArgSpec, cell: Rect, op: &str,
             cu.disable();
         }
         let te = TextEdit::singleline(&mut t)
+            .id(Id::unique(("campo", cx.key, n.id, k)))
             .font(if mono { FontId::monospace(12.5) } else { FontId::proportional(13.) })
             .margin(Margin::symmetric(5, 2))
             .desired_width(cell.width());
@@ -1012,13 +1072,19 @@ fn valor(ui: &mut Ui, n: &mut Node, k: usize, s: &ArgSpec, cell: Rect, op: &str,
     }
 }
 
-fn comentario(ui: &mut Ui, n: &mut Node, gm: &Geo, sel: bool, edit_on: bool, acts: &mut Vec<A>) {
+fn comentario(ui: &mut Ui, n: &mut Node, gm: &Geo, sel: bool, edit_on: bool, cx: &Cx, acts: &mut Vec<A>) {
     let r = gm.rect;
     let p = ui.painter().clone();
-    p.rect(r, 10, Color32::from_rgba_unmultiplied(0x7a, 0x7a, 0x90, 22), Stroke::new(if sel { 2. } else { 1. }, if sel { ACCENT } else { BORDER_STRONG }), egui::StrokeKind::Inside);
+    let grupo = matches!(n.kind, NodeKind::Group { .. });
+    let (fill, headc) = if grupo {
+        (Color32::from_rgba_unmultiplied(0x4c, 0x97, 0xff, if n.off { 8 } else { 14 }), Color32::from_rgba_unmultiplied(0x4c, 0x97, 0xff, 46))
+    } else {
+        (Color32::from_rgba_unmultiplied(0x7a, 0x7a, 0x90, 22), Color32::from_rgba_unmultiplied(0x7a, 0x7a, 0x90, 40))
+    };
+    p.rect(r, 10, fill, Stroke::new(if sel { 2. } else { 1. }, if sel { ACCENT } else if grupo { CAT_MOV.gamma_multiply(0.6) } else { BORDER_STRONG }), egui::StrokeKind::Inside);
     let head = Rect::from_min_size(r.min, Vec2::new(r.width(), 34.));
-    p.rect_filled(head, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, Color32::from_rgba_unmultiplied(0x7a, 0x7a, 0x90, 40));
-    let resp = ui.interact(head, Id::unique(("coment", n.id)), Sense::click_and_drag());
+    p.rect_filled(head, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, headc);
+    let resp = ui.interact(head, Id::unique(("coment", cx.key, n.id)), Sense::click_and_drag());
     if resp.clicked() {
         acts.push(A::Click(n.id, false));
     }
@@ -1028,11 +1094,23 @@ fn comentario(ui: &mut Ui, n: &mut Node, gm: &Geo, sel: bool, edit_on: bool, act
     if resp.secondary_clicked() && edit_on {
         acts.push(A::Menu(n.id));
     }
-    p.text(Pos2::new(r.left() + 12., head.center().y), Align2::LEFT_CENTER, ic::NOTE, FontId::proportional(16.), WARN);
+    if resp.double_clicked() && edit_on {
+        acts.push(A::Edit(n.id, 0, None, Rect::from_min_size(head.left_bottom(), Vec2::ZERO)));
+    }
+    if !grupo {
+        resp.on_hover_text(if cx.hoja.is_some() { "Nota: está en la hoja, el juego no la usa. Doble clic para cambiarla." } else { "Nota: el juego no la usa." });
+    } else {
+        resp.on_hover_text("Grupo: los eventos que empiezan adentro del recuadro van juntos. Arrástralo para moverlo con todo lo que tiene.");
+    }
+    p.text(Pos2::new(r.left() + 12., head.center().y), Align2::LEFT_CENTER, if grupo { ic::FOLDER } else { ic::NOTE }, FontId::proportional(16.), if grupo { CAT_MOV } else { WARN });
     let text = n.args.first().cloned().unwrap_or_default();
-    let tr = Rect::from_min_max(Pos2::new(r.left() + 36., r.top() + 8.), Pos2::new(r.right() - 40., r.bottom() - 8.));
-    let g = p.layout(text, sb(15.), TEXT_SOFT, tr.width());
+    let tr = Rect::from_min_max(Pos2::new(r.left() + 36., r.top() + 8.), Pos2::new(r.right() - 40., if grupo { head.bottom() } else { r.bottom() - 8. }));
+    let shown = if grupo && text.is_empty() { "Grupo sin nombre".to_string() } else { text };
+    let g = p.layout(shown, sb(15.), if grupo { TEXT } else { TEXT_SOFT }, tr.width());
     p.with_clip_rect(tr.intersect(ui.clip_rect())).galley(tr.min, g, TEXT_SOFT);
+    if n.off {
+        p.text(Pos2::new(r.right() - 40., head.center().y), Align2::RIGHT_CENTER, "desactivado", FontId::proportional(12.), TEXT_MUTED);
+    }
     if edit_on {
         let b = Rect::from_min_size(Pos2::new(r.right() - 34., r.top() + 6.), Vec2::new(24., 22.));
         if ui.put(b, Button::new(RichText::new(ic::PENCIL).size(13.)).frame_when_inactive(false)).on_hover_text("Cambiar el texto").clicked() {
@@ -1040,7 +1118,7 @@ fn comentario(ui: &mut Ui, n: &mut Node, gm: &Geo, sel: bool, edit_on: bool, act
         }
         let h = Rect::from_min_size(r.right_bottom() - Vec2::splat(14.), Vec2::splat(14.));
         p.line_segment([h.right_top() + Vec2::new(-2., 4.), h.left_bottom() + Vec2::new(4., -2.)], Stroke::new(1.5, TEXT_FAINT));
-        let hr = ui.interact(h, Id::unique(("coment_tam", n.id)), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeNwSe);
+        let hr = ui.interact(h, Id::unique(("coment_tam", cx.key, n.id)), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeNwSe);
         if hr.drag_started() {
             acts.push(A::Resize(n.id));
         }
@@ -1143,12 +1221,17 @@ fn estado(ctx: &egui::Context, outer: Rect, g: &Graph, st: &mut Vista, cx: &Cx, 
             ui.horizontal(|ui| {
                 if cx.solo_ver {
                     ui.label(RichText::new(ic::EYE).color(TEXT_MUTED));
-                    ui.label(RichText::new("La hoja vista como nodos (solo para mirar)").color(TEXT_SOFT));
+                    let t = match cx.aviso {
+                        Some(a) => format!("Esta hoja tiene {a}: los nodos todavía no pueden mostrarlo igual. Puedes mirar; para cambiarla, usa la Hoja."),
+                        None => "Solo para mirar".into(),
+                    };
+                    ui.add(egui::Label::new(RichText::new(t).color(TEXT_SOFT)).wrap());
                     return;
                 }
+                let pl = if cx.n_eventos == 1 { "" } else { "s" };
                 if n_err == 0 {
                     ui.label(RichText::new(ic::CHECK_CIRCLE).color(OK));
-                    let t = format!("Compila: {} evento{}", cx.n_eventos, if cx.n_eventos == 1 { "" } else { "s" });
+                    let t = if cx.hoja.is_some() { format!("La hoja está al día: {} evento{pl}", cx.n_eventos) } else { format!("Compila: {} evento{pl}", cx.n_eventos) };
                     ui.label(RichText::new(t).color(TEXT));
                 } else {
                     ui.label(RichText::new(ic::WARNING_CIRCLE).color(DANGER));
@@ -1167,6 +1250,14 @@ fn estado(ctx: &egui::Context, outer: Rect, g: &Graph, st: &mut Vista, cx: &Cx, 
                     if let Some(m) = general.first() {
                         ui.label(RichText::new(trunc(m, 60)).color(facil::ROJO_TXT));
                     }
+                }
+                if let Some(u) = cx.hoja {
+                    let b = g.nodes.iter().filter(|n| !u.contains(&n.id) && !matches!(n.kind, NodeKind::Data { .. })).count();
+                    if b > 0 {
+                        ui.label(RichText::new(format!("· {b} borrador{}", if b == 1 { "" } else { "es" })).color(WARN))
+                            .on_hover_text("Nodos que todavía no están en la hoja: falta conectarlos a un «Cuando» o completarlos. Quedan guardados y pasan a la hoja solos cuando están listos.");
+                    }
+                    return;
                 }
                 let reach = ng::reachable(g);
                 let sueltos = g.nodes.iter().filter(|n| ng::has_exec_in(n) && !reach.contains(&n.id)).count();
@@ -1219,7 +1310,7 @@ fn menu(ctx: &egui::Context, g: &mut Graph, st: &mut Vista, edit_on: bool) -> Op
                     close = true;
                 }
             }
-            if !matches!(n.kind, NodeKind::Comment { .. } | NodeKind::Data { .. }) && item(ui, if n.off { ic::EYE } else { ic::EYE_SLASH }, if n.off { "Activar" } else { "Desactivar" }) {
+            if !matches!(n.kind, NodeKind::Comment { .. } | NodeKind::Note | NodeKind::Data { .. }) && item(ui, if n.off { ic::EYE } else { ic::EYE_SLASH }, if n.off { "Activar" } else { "Desactivar" }) {
                 if let Some(m) = g.nodes.iter_mut().find(|m| m.id == id) {
                     m.off = !m.off;
                 }
@@ -1259,13 +1350,19 @@ fn editar(ctx: &egui::Context, g: &mut Graph, st: &mut Vista, cx: &Cx, out: &mut
     let pos = Pos2::new(ed.screen.x.min(screen.right() - 480.).max(screen.left() + 8.), ed.screen.y.min(screen.bottom() - 260.).max(screen.top() + 8.));
     let r = egui::Area::new(Id::unique("nodos_editar")).order(Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         fr.show(ui, |ui| {
-            ui.set_max_width(if ed.k == 0 && ed.sub.is_none() && matches!(n.kind, NodeKind::Comment { .. }) { 420. } else { 460. });
-            if let NodeKind::Comment { .. } = n.kind {
-                facil::titulo(ui, "Texto del comentario");
+            let texto = matches!(n.kind, NodeKind::Comment { .. } | NodeKind::Group { .. } | NodeKind::Note);
+            ui.set_max_width(if texto { 420. } else { 460. });
+            if texto {
+                let grupo = matches!(n.kind, NodeKind::Group { .. });
+                facil::titulo(ui, if grupo { "Nombre del grupo" } else { "Texto de la nota" });
                 if n.args.is_empty() {
                     n.args.push(String::new());
                 }
-                ui.add(TextEdit::multiline(&mut n.args[0]).desired_width(400.).desired_rows(4));
+                if grupo {
+                    ui.add(TextEdit::singleline(&mut n.args[0]).desired_width(400.));
+                } else {
+                    ui.add(TextEdit::multiline(&mut n.args[0]).desired_width(400.).desired_rows(4));
+                }
                 if ui.button(it(ic::CHECK, "Listo")).clicked() {
                     close = true;
                 }
@@ -1365,7 +1462,7 @@ const TABS: [(&str, &str, &str); 5] = [
     ("Datos", "Datos", "Números, cuentas, comparaciones y textos para enchufar en los parámetros"),
 ];
 
-fn entradas(l: &Lists) -> Vec<Entrada> {
+fn entradas(l: &Lists, hoja: bool) -> Vec<Entrada> {
     let mut v = vec![];
     let cat = |op: &str| facil::cat_op(op).color;
     v.push(Entrada {
@@ -1408,7 +1505,11 @@ fn entradas(l: &Lists) -> Vec<Entrada> {
         let kind = if f.1 { NodeKind::Cond { op: op.into() } } else { NodeKind::Act { op: op.into() } };
         v.push(Entrada { color: CAT_FUNC, ..flujo(kind, args, &format!("Mi bloque: {}", f.0), "Usa un bloque que inventaste en «Mis bloques».", ic::PUZZLE) });
     }
-    v.push(flujo(NodeKind::Comment { w: 360., h: 120. }, vec!["Una nota".into()], "Comentario", "Un recuadro con una nota para explicar algo.", ic::NOTE));
+    v.push(flujo(NodeKind::Comment { w: 360., h: 120. }, vec!["Una nota".into()], if hoja { "Nota" } else { "Comentario" }, "Un recuadro con una nota para explicar algo.", ic::NOTE));
+    if hoja {
+        v.push(flujo(NodeKind::Note, vec!["Una nota".into()], "Nota entre pasos", "Una nota en una salida de una Secuencia, entre los sub-eventos.", ic::NOTE));
+        v.push(flujo(NodeKind::Group { w: 620., h: 260. }, vec!["Grupo".into()], "Grupo", "Un recuadro: los eventos que empiezan adentro van juntos (y se pueden desactivar todos a la vez).", ic::FOLDER));
+    }
     for d in ng::DATA {
         let basic = matches!(d.f, "num" | "text" | "var" | "prop" | "dt" | "add" | "sub" | "mul" | "random" | "eq" | "gt" | "lt" | "join" | "obj");
         let mut args: Vec<String> = d.ins.iter().map(|i| i.def.to_string()).collect();
@@ -1451,7 +1552,7 @@ fn encaja(e: &Entrada, from: Pin, geos: &HashMap<NodeId, Geo>) -> Option<Pin> {
 
 fn paleta(ctx: &egui::Context, g: &mut Graph, st: &mut Vista, cx: &Cx, geos: &HashMap<NodeId, Geo>) {
     let Some(mut pal) = st.paleta.take() else { return };
-    let all = entradas(cx.l);
+    let all = entradas(cx.l, cx.hoja.is_some());
     let q = facil::norm(pal.search.trim());
     let from = match pal.modo {
         PalModo::Nuevo(f) => f,
@@ -1654,8 +1755,17 @@ fn ver_eventos(ui: &mut Ui, evs: &[Event], depth: usize) {
             EventKind::Repeat => Some(format!("Repetir {} veces", e.text)),
             EventKind::ForEach => Some(format!("Para cada {}", e.text)),
             EventKind::While => Some("Mientras".into()),
+            EventKind::Group => Some(format!("{} Grupo: {}", ic::FOLDER, e.text)),
             _ => None,
         };
+        if e.kind == EventKind::Comment {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(ic::NOTE).color(WARN));
+                ui.label(RichText::new(&e.text).color(TEXT_SOFT).italics());
+            });
+            ui.add_space(4.);
+            continue;
+        }
         Frame::new().fill(SURFACE).stroke((1., BORDER)).corner_radius(8).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             if e.disabled {
@@ -1670,7 +1780,9 @@ fn ver_eventos(ui: &mut Ui, evs: &[Event], depth: usize) {
                     ui.label(RichText::new(catalog::sentence(c)).color(TEXT_SOFT));
                 });
             }
-            if e.conds.is_empty() && e.kind == EventKind::Standard {
+            if e.conds.is_empty() && e.kind == EventKind::Standard && e.acts.is_empty() && e.sub.is_empty() {
+                ui.label(RichText::new("(vacío)").color(TEXT_MUTED));
+            } else if e.conds.is_empty() && e.kind == EventKind::Standard {
                 ui.label(RichText::new("Siempre").color(TEXT_MUTED));
             }
             for a in &e.acts {
@@ -1714,33 +1826,146 @@ impl Vista {
 use super::eventos::Target;
 use super::{seg, seg_btn, Nivel, UNDO_HINT};
 
+/// Eventos, lugares de los nodos y borradores de la hoja de una escena o un bloque.
+fn partes(p: &Project, t: Target) -> Option<(&Vec<Event>, &ng::Layout, &Graph)> {
+    match t {
+        Target::Scene(i) => p.scenes.get(i).map(|s| (&s.events, &s.node_layout, &s.node_drafts)),
+        Target::Func(i) => p.functions.get(i).map(|f| (&f.events, &f.node_layout, &f.node_drafts)),
+    }
+}
+
+fn partes_mut(p: &mut Project, t: Target) -> Option<(&mut Vec<Event>, &mut ng::Layout, &mut Graph)> {
+    match t {
+        Target::Scene(i) => p.scenes.get_mut(i).map(|s| (&mut s.events, &mut s.node_layout, &mut s.node_drafts)),
+        Target::Func(i) => p.functions.get_mut(i).map(|f| (&mut f.events, &mut f.node_layout, &mut f.node_drafts)),
+    }
+}
+
+/// Deja los nodos en el orden que tenían (así un campo de texto no pierde el foco cuando el nodo pasa a borrador).
+fn mismo_orden(g: &mut Graph, antes: &Graph) {
+    let at: HashMap<NodeId, usize> = antes.nodes.iter().enumerate().map(|(k, n)| (n.id, k)).collect();
+    g.nodes.sort_by_key(|n| at.get(&n.id).copied().unwrap_or(usize::MAX));
+}
+
+/// Archivo que recuerda que ya se cerró la pista de los nodos.
+fn pista_archivo() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    Some(base.join("nicostation").join("pista-nodos"))
+}
+
+/// Pista para la primera vez (modo fácil): en los nodos también se edita.
+fn pista(ctx: &egui::Context, outer: Rect, st: &mut Vista) {
+    let vista = *st.pista_vista.get_or_insert_with(|| pista_archivo().is_some_and(|f| f.exists()));
+    if vista {
+        return;
+    }
+    let mut cerrar = false;
+    egui::Area::new(Id::unique("nodos_pista")).order(Order::Middle).pivot(Align2::RIGHT_BOTTOM).fixed_pos(outer.right_bottom() - Vec2::new(12., 58.)).show(ctx, |ui| {
+        Frame::new().fill(blend(ACCENT, PANEL, 0.14)).stroke((1., ACCENT.gamma_multiply(0.7))).corner_radius(10).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(ic::LIGHTBULB).size(17.).color(ACCENT));
+                ui.label(RichText::new("Aquí también puedes editar: arrastra, conecta y toca los valores. La hoja cambia sola.").color(TEXT));
+                ui.add_space(4.);
+                cerrar = ui.button(it(ic::CHECK, "Entendido")).clicked();
+            });
+        });
+    });
+    if cerrar {
+        st.pista_vista = Some(true);
+        if let Some(f) = pista_archivo() {
+            if let Some(d) = f.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::write(f, "");
+        }
+    }
+}
+
 impl super::App {
     fn clave(&self, t: Target) -> String {
-        match t {
-            Target::Scene(i) => format!("e{i}g{}", self.nv.grafo),
-            Target::Func(i) => format!("f{i}"),
+        match (t, self.nv.aparte) {
+            (Target::Scene(i), true) => format!("e{i}g{}", self.nv.grafo),
+            (Target::Scene(i), false) => format!("e{i}hoja"),
+            (Target::Func(i), true) => format!("f{i}g"),
+            (Target::Func(i), false) => format!("f{i}hoja"),
         }
     }
 
     fn hoja_de(&self, t: Target) -> &[Event] {
-        match t {
-            Target::Scene(i) => self.p.scenes.get(i).map_or(&[][..], |s| &s.events),
-            Target::Func(i) => self.p.functions.get(i).map_or(&[][..], |f| &f.events),
-        }
+        partes(&self.p, t).map_or(&[][..], |p| p.0)
     }
 
+    /// Grafo aparte elegido (si se está mirando uno).
     fn grafo_de(&self, t: Target) -> Option<&Graph> {
+        if !self.nv.aparte {
+            return None;
+        }
         match t {
             Target::Scene(i) => self.p.scenes.get(i)?.graphs.get(self.nv.grafo),
             Target::Func(i) => self.p.functions.get(i)?.graph.as_ref(),
         }
     }
 
+    /// Lo que se está mirando en el lienzo: el grafo aparte o la hoja vista como nodos.
+    fn grafo_mut_de(&mut self, t: Target) -> Option<&mut Graph> {
+        if !self.nv.aparte {
+            let key = self.clave(t);
+            return self.nv.vivo.as_mut().filter(|v| v.key == key).map(|v| &mut v.g);
+        }
+        match t {
+            Target::Scene(i) => self.p.scenes.get_mut(i)?.graphs.get_mut(self.nv.grafo),
+            Target::Func(i) => self.p.functions.get_mut(i)?.graph.as_mut(),
+        }
+    }
+
+    fn n_grafos(&self, t: Target) -> usize {
+        match t {
+            Target::Scene(i) => self.p.scenes.get(i).map_or(0, |s| s.graphs.len()),
+            Target::Func(i) => self.p.functions.get(i).map_or(0, |f| f.graph.is_some() as usize),
+        }
+    }
+
+    /// Arma (o rearma, si la hoja cambió por fuera: la hoja, deshacer, otra herramienta) la hoja vista como nodos.
+    fn hoja_viva(&mut self, t: Target) {
+        let key = self.clave(t);
+        let Some((evs, lay, dr)) = partes(&self.p, t) else {
+            self.nv.vivo = None;
+            return;
+        };
+        let huella = hash(&serde_json::to_string(&(evs, lay, dr)).unwrap_or_default());
+        if self.nv.vivo.as_ref().is_some_and(|v| v.key == key && v.huella == huella) {
+            return;
+        }
+        let s = ng::sheet_load(evs, lay, dr);
+        let aviso = (!s.exact).then(|| ng::unshowable(evs));
+        let usados = ng::compile_sheet(&s.graph, &s.canon).used;
+        let mut g = s.graph;
+        if let Some(v) = self.nv.vivo.as_ref().filter(|v| v.key == key) {
+            mismo_orden(&mut g, &v.g);
+        }
+        self.nv.vivo = Some(Vivo { key, huella, base: g.clone(), g, canon: s.canon, usados, aviso });
+    }
+
+    /// Si los nodos cambiaron, los pasa a la hoja (eventos, lugares y borradores) y los vuelve a armar desde ahí.
+    fn guardar_hoja(&mut self, t: Target) {
+        let key = self.clave(t);
+        let Some(v) = self.nv.vivo.as_ref().filter(|v| v.key == key) else { return };
+        if v.aviso.is_some() || v.g == v.base {
+            return;
+        }
+        let out = ng::sheet_save(&v.g, &v.canon);
+        if let Some((e, l, d)) = partes_mut(&mut self.p, t) {
+            (*e, *l, *d) = (out.events, out.layout, out.drafts);
+        }
+        self.hoja_viva(t);
+    }
+
     /// Pestaña Eventos (o Mis bloques): la hoja o los nodos, con el selector arriba.
     pub(super) fn eventos_o_nodos(&mut self, ui: &mut Ui, t: Target) {
-        if let Target::Scene(i) = t {
-            let n = self.p.scenes[i].graphs.len();
-            self.nv.grafo = self.nv.grafo.min(n.saturating_sub(1));
+        let n = self.n_grafos(t);
+        self.nv.grafo = self.nv.grafo.min(n.saturating_sub(1));
+        if n == 0 {
+            self.nv.aparte = false;
         }
         let nodos = match t {
             Target::Scene(_) => self.nv.en_escena,
@@ -1752,35 +1977,25 @@ impl super::App {
                 if seg_btn(ui, !nodos, (RichText::new(ic::LIST), RichText::new("Hoja"))).on_hover_text("Eventos en filas: CUANDO / ENTONCES").clicked() {
                     set = Some(false);
                 }
-                if seg_btn(ui, nodos, (RichText::new(ic::GRAPH), RichText::new("Nodos"))).on_hover_text("Lógica con nodos y cables, como los Blueprints").clicked() {
+                if seg_btn(ui, nodos, (RichText::new(ic::GRAPH), RichText::new("Nodos"))).on_hover_text("La misma hoja como nodos y cables, como los Blueprints. Lo que cambies aquí cambia la hoja.").clicked() {
                     set = Some(true);
                 }
             });
             if nodos {
                 self.barra_nodos(ui, t);
-            } else {
-                let tiene = !self.hoja_de(t).is_empty();
-                let g = match t {
-                    Target::Scene(i) => self.p.scenes[i].graphs.len(),
-                    Target::Func(i) => self.p.functions[i].graph.is_some() as usize,
-                };
-                if tiene && ui.button(it(ic::EYE, "Ver la hoja como nodos")).on_hover_text("Muestra estos eventos como un grafo, sin cambiar nada").clicked() {
-                    set = Some(true);
-                    self.nv.ver_hoja = true;
-                }
-                if g > 0 {
-                    ui.label(muted(format!("{} Esta hoja también tiene {g} grafo{} de nodos: se ejecuta{} después de estos eventos.", ic::INFO, if g == 1 { "" } else { "s" }, if g == 1 { "" } else { "n" })));
-                }
+            } else if n > 0 {
+                ui.label(muted(format!("{} Además hay {n} grafo{} aparte: se ejecuta{} después de estos eventos.", ic::INFO, if n == 1 { "" } else { "s" }, if n == 1 { "" } else { "n" })));
             }
         });
         ui.add_space(6.);
         if let Some(v) = set {
+            if v && !nodos {
+                // Al abrir los nodos se ve la hoja.
+                self.nv.aparte = false;
+            }
             match t {
                 Target::Scene(_) => self.nv.en_escena = v,
                 Target::Func(_) => self.nv.en_func = v,
-            }
-            if !v {
-                self.nv.ver_hoja = false;
             }
         }
         if nodos || set == Some(true) {
@@ -1794,50 +2009,57 @@ impl super::App {
         let mut nuevo = false;
         let mut borrar_g = false;
         let mut conv = None;
-        match t {
-            Target::Scene(i) => {
-                let names: Vec<String> = self.p.scenes[i].graphs.iter().map(|g| g.name.clone()).collect();
-                if !names.is_empty() {
-                    let cur = self.nv.grafo.min(names.len() - 1);
-                    egui::ComboBox::from_id_salt("grafo_sel").selected_text(format!("{} {}", ic::GRAPH, names[cur])).width(150.).show_ui(ui, |ui| {
-                        for (k, n) in names.iter().enumerate() {
-                            if ui.selectable_label(k == cur, n).clicked() {
-                                self.nv.grafo = k;
-                                self.nv.ver_hoja = false;
-                            }
-                        }
-                    });
-                    let g = &mut self.p.scenes[i].graphs[cur];
-                    ui.add(TextEdit::singleline(&mut g.name).desired_width(150.)).on_hover_text("Nombre del grafo");
-                    borrar_g = ib(ui, ic::TRASH, "Borrar este grafo").clicked();
+        let names: Vec<String> = match t {
+            Target::Scene(i) => self.p.scenes[i].graphs.iter().map(|g| g.name.clone()).collect(),
+            Target::Func(i) => self.p.functions[i].graph.iter().map(|g| g.name.clone()).collect(),
+        };
+        let experto = !self.facil;
+        if !names.is_empty() {
+            let cur = self.nv.grafo.min(names.len() - 1);
+            let shown = if self.nv.aparte { format!("{} {}", ic::GRAPH, names[cur]) } else { format!("{} La hoja", ic::LIST) };
+            let mut elegido = None;
+            egui::ComboBox::from_id_salt("grafo_sel").selected_text(shown).width(170.).show_ui(ui, |ui| {
+                if ui.selectable_label(!self.nv.aparte, format!("{} La hoja (sus eventos)", ic::LIST)).clicked() {
+                    elegido = Some(None);
                 }
-                nuevo = ui.button(it(ic::PLUS, "Nuevo grafo")).clicked();
-            }
-            Target::Func(i) => {
-                if self.p.functions[i].graph.is_none() {
-                    nuevo = ui.button(it(ic::PLUS, "Nuevo grafo")).clicked();
-                } else {
-                    borrar_g = ib(ui, ic::TRASH, "Borrar el grafo de este bloque").clicked();
-                }
-            }
-        }
-        if !self.hoja_de(t).is_empty() {
-            let b = Button::new((RichText::new(ic::ARROWS_SPLIT).color(ACCENT), RichText::new("Convertir la hoja"), RichText::new(ic::CARET_DOWN).color(TEXT_MUTED)));
-            let (r, _) = egui::containers::menu::MenuButton::from_button(b).ui(ui, |ui| {
-                menu_spacing(ui);
-                if ui.button(it(ic::ARROWS_SPLIT, "Pasar la hoja a nodos (la hoja queda vacía)")).clicked() {
-                    conv = Some(true);
-                }
-                if ui.button(it(ic::COPY, "Copiar la hoja como nodos (la hoja queda igual)")).on_hover_text("Ojo: la hoja y el grafo se ejecutan los dos").clicked() {
-                    conv = Some(false);
+                for (k, n) in names.iter().enumerate() {
+                    if ui.selectable_label(self.nv.aparte && k == cur, format!("{} Grafo aparte: {n}", ic::GRAPH)).clicked() {
+                        elegido = Some(Some(k));
+                    }
                 }
             });
-            r.on_hover_text("Hacer un grafo con los eventos de la hoja");
-            if seg_btn(ui, self.nv.ver_hoja, (RichText::new(ic::EYE), RichText::new("Ver la hoja"))).on_hover_text("La hoja vista como nodos, solo para mirar").clicked() {
-                self.nv.ver_hoja = !self.nv.ver_hoja;
+            if let Some(e) = elegido {
+                self.nv.aparte = e.is_some();
+                self.nv.grafo = e.unwrap_or(self.nv.grafo);
+                self.nv.reset();
+            }
+            if self.nv.aparte {
+                if let Target::Scene(i) = t {
+                    let g = &mut self.p.scenes[i].graphs[cur];
+                    ui.add(TextEdit::singleline(&mut g.name).desired_width(150.)).on_hover_text("Nombre del grafo");
+                }
+                borrar_g = ib(ui, ic::TRASH, "Borrar este grafo aparte").clicked();
             }
         }
-        if seg_btn(ui, self.nv.ver_eventos, (RichText::new(ic::LIST_BULLETS), RichText::new("Eventos generados"))).on_hover_text("Lo que el grafo le dice al juego, como hoja de eventos").clicked() {
+        let puede_nuevo = matches!(t, Target::Scene(_)) || names.is_empty();
+        if puede_nuevo && (experto || !names.is_empty()) {
+            nuevo = ui.button(it(ic::PLUS, "Nuevo grafo")).on_hover_text("Un grafo aparte: lógica extra que se ejecuta después de la hoja").clicked();
+        }
+        if experto && !self.nv.aparte && !self.hoja_de(t).is_empty() {
+            let b = Button::new((RichText::new(ic::ARROWS_SPLIT).color(ACCENT), RichText::new("Grafo aparte"), RichText::new(ic::CARET_DOWN).color(TEXT_MUTED)));
+            let (r, _) = egui::containers::menu::MenuButton::from_button(b).ui(ui, |ui| {
+                menu_spacing(ui);
+                if ui.button(it(ic::COPY, "Copiar la hoja a un grafo aparte")).on_hover_text("Ojo: la hoja y la copia se ejecutan las dos").clicked() {
+                    conv = Some(false);
+                }
+                if ui.button(it(ic::ARROWS_SPLIT, "Mover la hoja a un grafo aparte (la hoja queda vacía)")).clicked() {
+                    conv = Some(true);
+                }
+            });
+            r.on_hover_text("Hacer un grafo aparte con los eventos de la hoja");
+        }
+        let (lbl, tip) = if self.nv.aparte { ("Eventos generados", "Lo que el grafo le dice al juego, como hoja de eventos") } else { ("La hoja al lado", "La hoja en filas, al lado de los nodos: cambia sola mientras editas") };
+        if seg_btn(ui, self.nv.ver_eventos, (RichText::new(ic::LIST_BULLETS), RichText::new(lbl))).on_hover_text(tip).clicked() {
             self.nv.ver_eventos = !self.nv.ver_eventos;
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1868,7 +2090,7 @@ impl super::App {
                 }
                 Target::Func(i) => self.p.functions[i].graph = Some(Graph { name: self.p.functions[i].name.clone(), ..Default::default() }),
             }
-            self.nv.ver_hoja = false;
+            self.nv.aparte = true;
             self.nv.reset();
         }
         if borrar_g {
@@ -1879,6 +2101,7 @@ impl super::App {
                 _ => None,
             };
             self.nv.grafo = self.nv.grafo.saturating_sub(1);
+            self.nv.aparte = self.n_grafos(t) > 0;
             self.nv.reset();
             if let Some(n) = name {
                 self.say(Nivel::Info, format!("Grafo «{n}» borrado · {UNDO_HINT}"));
@@ -1889,21 +2112,14 @@ impl super::App {
         }
     }
 
-    fn grafo_mut_de(&mut self, t: Target) -> Option<&mut Graph> {
-        match t {
-            Target::Scene(i) => self.p.scenes.get_mut(i)?.graphs.get_mut(self.nv.grafo),
-            Target::Func(i) => self.p.functions.get_mut(i)?.graph.as_mut(),
-        }
-    }
-
-    /// Hace un grafo con la hoja; `mover` deja la hoja vacía (si no, se ejecutarían las dos).
+    /// Hace un grafo aparte con la hoja; `mover` deja la hoja vacía (si no, se ejecutarían las dos).
     pub(super) fn convertir(&mut self, t: Target, mover: bool) {
         self.snap_hist();
         let evs = self.hoja_de(t).to_vec();
         let name = match t {
             Target::Scene(i) => {
                 let gs = &self.p.scenes[i].graphs;
-                (1..).map(|k| if k == 1 { "Hoja convertida".to_string() } else { format!("Hoja convertida {k}") }).find(|n| !gs.iter().any(|g| &g.name == n)).unwrap()
+                (1..).map(|k| if k == 1 { "Copia de la hoja".to_string() } else { format!("Copia de la hoja {k}") }).find(|n| !gs.iter().any(|g| &g.name == n)).unwrap()
             }
             Target::Func(i) => self.p.functions[i].name.clone(),
         };
@@ -1913,9 +2129,6 @@ impl super::App {
             Target::Scene(i) => {
                 self.p.scenes[i].graphs.push(g);
                 self.nv.grafo = self.p.scenes[i].graphs.len() - 1;
-                if mover {
-                    self.p.scenes[i].events.clear();
-                }
             }
             Target::Func(i) => {
                 let f = &mut self.p.functions[i];
@@ -1926,27 +2139,39 @@ impl super::App {
                     }
                     None => f.graph = Some(g),
                 }
-                if mover {
-                    f.events.clear();
-                }
+            }
+        }
+        if mover {
+            if let Some((e, l, _)) = partes_mut(&mut self.p, t) {
+                e.clear();
+                l.clear();
             }
         }
         match t {
             Target::Scene(_) => self.nv.en_escena = true,
             Target::Func(_) => self.nv.en_func = true,
         }
-        self.nv.ver_hoja = false;
+        self.nv.aparte = true;
         self.nv.reset();
         self.nv.encuadrar = true;
         let extra = if mover { "; la hoja quedó vacía" } else { "; la hoja sigue igual (se ejecutan las dos)" };
-        self.say(Nivel::Ok, format!("Hoja convertida en un grafo de {n} nodos{extra} · {UNDO_HINT}"));
+        self.say(Nivel::Ok, format!("Grafo aparte de {n} nodos{extra} · {UNDO_HINT}"));
     }
 
     fn nodos_ui(&mut self, ui: &mut Ui, t: Target) {
         let ctx = ui.ctx().clone();
         let l = self.kid_lists(&ctx);
+        if self.nv.aparte && self.grafo_de(t).is_none() {
+            self.nv.aparte = false;
+        }
+        let hoja = !self.nv.aparte;
+        if hoja {
+            self.hoja_viva(t);
+            // Cambios hechos desde la barra (alinear) o al abrir.
+            self.guardar_hoja(t);
+        }
         let key = self.clave(t);
-        // Errores y eventos compilados: solo se recalculan cuando cambia el proyecto.
+        // Errores y eventos: solo se recalculan cuando cambia el proyecto.
         let h = hash(&(&self.now, &key, self.facil)) | 1;
         if self.nv.cache.key != h {
             let base = self.base_dir();
@@ -1954,29 +2179,31 @@ impl super::App {
                 Target::Scene(i) => self.p.scenes.get(i),
                 Target::Func(_) => None,
             };
-            self.nv.cache = match self.grafo_de(t) {
-                Some(g) => {
-                    let probs = nicostation::validate::graph_problems(&self.p, scene, g, Some(&base))
-                        .into_iter()
-                        .map(|(id, m)| (id, if self.facil { facil::amable(&m) } else { m }))
-                        .collect();
+            let amable = |m: String| if self.facil { facil::amable(&m) } else { m };
+            self.nv.cache = match (hoja, self.grafo_de(t), self.nv.vivo.as_ref()) {
+                (false, Some(g), _) => {
+                    let probs = nicostation::validate::graph_problems(&self.p, scene, g, Some(&base)).into_iter().map(|(id, m)| (id, amable(m))).collect();
                     Cache { key: h, probs, eventos: ng::compile_lossy(g).0 }
                 }
-                None => Cache { key: h, ..Default::default() },
+                (true, _, Some(v)) => {
+                    let probs = nicostation::validate::sheet_problems(&self.p, scene, &v.g, &v.canon, Some(&base)).into_iter().map(|(id, m)| (id, amable(m))).collect();
+                    Cache { key: h, probs, eventos: self.hoja_de(t).to_vec() }
+                }
+                _ => Cache { key: h, ..Default::default() },
             };
         }
         let probs = self.nv.cache.probs.clone();
         let n_ev = contar(&self.nv.cache.eventos);
-        if self.nv.ver_eventos && !self.nv.ver_hoja {
+        if self.nv.ver_eventos {
             let evs = self.nv.cache.eventos.clone();
             let panel = Frame::new().fill(PANEL).inner_margin(12).stroke((1., BORDER));
             egui::Panel::right("nodos_eventos").default_size(380.).size_range(260.0..=640.).frame(panel).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(ic::LIST_BULLETS).color(ACCENT));
-                    ui.label(RichText::new("Eventos generados").font(sb(15.)));
+                    ui.label(RichText::new(if hoja { "La hoja" } else { "Eventos generados" }).font(sb(15.)));
                     ui.label(muted(format!("{n_ev}")));
                 });
-                ui.label(muted("Así ve el juego tu grafo. Para cambiarlo, cambia los nodos."));
+                ui.label(muted(if hoja { "Los mismos eventos, en filas. Cambia solo mientras editas los nodos." } else { "Así ve el juego tu grafo. Para cambiarlo, cambia los nodos." }));
                 ui.add_space(6.);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     if evs.is_empty() {
@@ -1987,76 +2214,32 @@ impl super::App {
             });
         }
         let facil_ = self.facil;
-        let salida = if self.nv.ver_hoja {
-            let evs = self.hoja_de(t).to_vec();
-            let hk = hash(&serde_json::to_string(&evs).unwrap_or_default());
-            if self.nv.prev.as_ref().is_none_or(|p| p.0 != hk) {
-                self.nv.prev = Some((hk, ng::from_events("Hoja", &evs)));
+        let salida = if hoja {
+            let Some(mut v) = self.nv.vivo.take() else { return };
+            let outer = ui.available_rect_before_wrap();
+            let cx = Cx { l: &l, facil: facil_, probs: &probs, n_eventos: n_ev, key: &key, solo_ver: v.aviso.is_some(), hoja: Some(&v.usados), aviso: v.aviso.as_deref() };
+            let s = lienzo(ui, &mut v.g, &mut self.nv, &cx);
+            if facil_ && v.aviso.is_none() {
+                pista(&ctx, outer, &mut self.nv);
             }
-            let mut g = self.nv.prev.take().map(|p| p.1).unwrap_or_default();
-            let k = format!("{key}-hoja");
-            let cx = Cx { l: &l, facil: facil_, probs: &[], n_eventos: contar(&evs), key: &k, solo_ver: true };
-            let s = lienzo(ui, &mut g, &mut self.nv, &cx);
-            self.nv.prev = Some((hk, g));
-            Some(s)
+            self.nv.vivo = Some(v);
+            self.guardar_hoja(t);
+            s
         } else {
             let (p, nv) = (&mut self.p, &mut self.nv);
             let g = match t {
                 Target::Scene(i) => p.scenes.get_mut(i).and_then(|s| s.graphs.get_mut(nv.grafo)),
                 Target::Func(i) => p.functions.get_mut(i).and_then(|f| f.graph.as_mut()),
             };
-            match g {
-                Some(g) => {
-                    let cx = Cx { l: &l, facil: facil_, probs: &probs, n_eventos: n_ev, key: &key, solo_ver: false };
-                    Some(lienzo(ui, g, nv, &cx))
-                }
-                None => {
-                    self.sin_grafo(ui, t);
-                    None
-                }
-            }
+            let Some(g) = g else { return };
+            let cx = Cx { l: &l, facil: facil_, probs: &probs, n_eventos: n_ev, key: &key, solo_ver: false, hoja: None, aviso: None };
+            lienzo(ui, g, nv, &cx)
         };
-        if let Some(s) = salida {
-            if let Some(m) = s.msg {
-                self.say(Nivel::Info, m);
-            }
-            if let Some((n, g)) = s.new_var {
-                self.crear_cajita(&n, g);
-            }
+        if let Some(m) = salida.msg {
+            self.say(Nivel::Info, m);
         }
-    }
-
-    fn sin_grafo(&mut self, ui: &mut Ui, t: Target) {
-        let tiene = !self.hoja_de(t).is_empty();
-        let (mut nuevo, mut conv) = (false, false);
-        ui.add_space(40.);
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new(ic::GRAPH).size(36.).color(TEXT_FAINT));
-            ui.label(RichText::new("Todavía no hay nodos aquí").font(sb(18.)));
-            ui.label(muted("Un grafo es otra forma de hacer la lógica del juego: nodos unidos con flechas, como en Unreal."));
-            ui.add_space(10.);
-            ui.horizontal(|ui| {
-                ui.add_space((ui.available_width() - if tiene { 430. } else { 170. }).max(0.) / 2.);
-                ui.spacing_mut().button_padding = Vec2::new(14., 8.);
-                nuevo = primary(ui, (on_accent(ic::PLUS).size(16.), on_accent("Nuevo grafo").font(sb(15.)))).clicked();
-                if tiene {
-                    conv = ui.button((RichText::new(ic::ARROWS_SPLIT).size(16.).color(ACCENT), RichText::new("Convertir la hoja en nodos").font(sb(15.)))).on_hover_text("Los eventos pasan al grafo y la hoja queda vacía").clicked();
-                }
-            });
-        });
-        if nuevo {
-            self.snap_hist();
-            match t {
-                Target::Scene(i) => {
-                    self.p.scenes[i].graphs.push(Graph { name: "Grafo 1".into(), ..Default::default() });
-                    self.nv.grafo = self.p.scenes[i].graphs.len() - 1;
-                }
-                Target::Func(i) => self.p.functions[i].graph = Some(Graph { name: self.p.functions[i].name.clone(), ..Default::default() }),
-            }
-            self.nv.reset();
-        }
-        if conv {
-            self.convertir(t, true);
+        if let Some((n, g)) = salida.new_var {
+            self.crear_cajita(&n, g);
         }
     }
 
@@ -2064,9 +2247,10 @@ impl super::App {
     pub(super) fn abrir_nodos(&mut self, que: &str) {
         let t = Target::Scene(self.sc);
         self.nv.en_escena = true;
+        self.nv.aparte = false;
         match que {
-            "nodos-hoja" => self.nv.ver_hoja = true,
-            "nodos" => {}
+            "nodos" | "nodos-hoja" | "nodos-eventos" => {}
+            "nodos-borrador" => self.abrir_borrador(t),
             _ => self.convertir(t, true),
         }
         if que == "nodos-eventos" || que == "nodos-datos" {
@@ -2113,5 +2297,30 @@ impl super::App {
                 self.nv.sel = rotos;
             }
         }
+    }
+
+    /// `--abrir nodos-borrador`: la hoja como nodos con una acción nueva sin completar metida en el primer camino que
+    /// tiene dos acciones seguidas (queda como borrador, en rojo, y la hoja sigue igual).
+    fn abrir_borrador(&mut self, t: Target) {
+        self.hoja_viva(t);
+        let Some(v) = self.nv.vivo.as_mut() else { return };
+        let g = &mut v.g;
+        let Some(f) = g.flow.iter().copied().find(|f| {
+            let act = |id: NodeId| g.nodes.iter().any(|n| n.id == id && matches!(n.kind, NodeKind::Act { .. }));
+            act(f.from) && act(f.to)
+        }) else {
+            return;
+        };
+        let (x, y) = g.nodes.iter().find(|n| n.id == f.from).map_or((0., 0.), |n| (n.x, n.y));
+        // Lo que sigue en esa fila se corre a la derecha para hacerle lugar.
+        for n in g.nodes.iter_mut().filter(|n| n.y == y && n.x > x) {
+            n.x += ng::NODE_W + 60.;
+        }
+        let id = next_id(g);
+        g.nodes.push(Node { id, kind: NodeKind::Act { op: "set".into() }, x: x + ng::NODE_W + 60., y, args: vec![String::new(), "angle".into(), "0".into()], not: false, sub: vec![], off: false });
+        g.flow.retain(|x| !(x.from == f.from && x.out == f.out));
+        g.flow.extend([Flow { from: f.from, out: f.out, to: id }, Flow { from: id, out: 0, to: f.to }]);
+        self.nv.sel = BTreeSet::from([id]);
+        self.guardar_hoja(t);
     }
 }

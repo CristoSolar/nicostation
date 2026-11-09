@@ -178,9 +178,33 @@ pub fn meta(op: &str) -> Option<&'static Meta> {
 }
 
 /// Frase legible: `"_0_ choca con _1_"` + args → `"Player choca con Coin"`.
+/// Frase del bloque sin las partes de parámetros opcionales que quedaron vacíos:
+/// «Reproducir _0_ al volumen _1_ (canal _2_)» sin canal → «Reproducir _0_ al volumen _1_».
+pub fn template(i: &crate::model::Instr) -> String {
+    let Some(m) = meta(&i.op) else { return String::new() };
+    let mut s = m.sentence.to_string();
+    for (k, p) in m.params.iter().enumerate() {
+        if !optional(p.0) || i.args.get(k).is_some_and(|a| !a.is_empty()) {
+            continue;
+        }
+        let ph = format!("_{k}_");
+        let Some(at) = s.find(&ph) else { continue };
+        // Se quita el paréntesis que lo contiene, o solo el marcador con su espacio.
+        match (s[..at].rfind('('), s[at..].find(')')) {
+            (Some(open), Some(close)) if !s[open..at].contains(')') => {
+                let end = at + close + 1;
+                let start = if s[..open].ends_with(' ') { open - 1 } else { open };
+                s.replace_range(start..end, "");
+            }
+            _ => s = s.replacen(&format!(" {ph}"), "", 1),
+        }
+    }
+    s
+}
+
 pub fn sentence(i: &crate::model::Instr) -> String {
     let Some(m) = meta(&i.op) else { return format!("¿{}? {:?}", i.op, i.args) };
-    let mut s = m.sentence.to_string();
+    let mut s = template(i);
     for (n, a) in i.args.iter().enumerate() {
         s = s.replace(&format!("_{n}_"), if a.is_empty() { "\"\"" } else { a });
     }
@@ -189,6 +213,18 @@ pub fn sentence(i: &crate::model::Instr) -> String {
     }
     let s = if i.not { format!("NO: {s}") } else { s };
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::Instr;
+
+    #[test]
+    fn frase_sin_opcionales_vacios() {
+        assert_eq!(super::sentence(&Instr::new("play_sound", &["a.wav", "50"])), "Reproducir a.wav al volumen 50");
+        assert_eq!(super::sentence(&Instr::new("play_sound", &["a.wav", "50", "voz"])), "Reproducir a.wav al volumen 50 (canal voz)");
+        assert_eq!(super::sentence(&Instr::new("play_music", &["m.ogg", "80", ""])), "Reproducir música m.ogg en bucle al volumen 80");
+    }
 }
 
 // ---------- Textos para niños (modo fácil del editor) ----------

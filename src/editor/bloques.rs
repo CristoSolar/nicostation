@@ -216,7 +216,7 @@ pub fn asistente(ctx: &egui::Context, a: &mut Asistente, taken: &dyn Fn(&str) ->
                 ui.spacing_mut().button_padding = Vec2::new(18., 8.);
                 let ok = err.is_none();
                 if ui.add_enabled_ui(ok, |ui| primary(ui, (on_accent(ic::CHECK).size(18.), on_accent("Crear bloque").font(sb(16.))))).inner.clicked() {
-                    res = Some(Some(Function { name: a.name.trim().into(), is_condition: a.cond, params: a.params.clone(), events: vec![], graph: None }));
+                    res = Some(Some(Function { name: a.name.trim().into(), is_condition: a.cond, params: a.params.clone(), events: vec![], ..Default::default() }));
                 }
             });
         });

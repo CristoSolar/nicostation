@@ -1155,6 +1155,8 @@ Los args de event/cond/act son los del catálogo; un cable a un parámetro reemp
 Ejemplo: {"name":"Mover","nodes":[{"id":1,"k":"event","op":"key_down","args":["Right"]},{"id":2,"k":"act","op":"add","args":["Heroe","x",""]},
  {"id":3,"k":"data","f":"mul","args":["200","1"]},{"id":4,"k":"data","f":"dt"}],"flow":[{"from":1,"to":2}],
  "wires":[{"from":3,"to":2,"arg":2},{"from":4,"to":3,"arg":1}]}  →  si tecla Right: sumar 200 * dt a x de Heroe.
+escena.node_layout / escena.node_drafts (y los de función) son solo del editor: dónde quedó cada nodo cuando se edita la hoja
+como nodos y los nodos que todavía no son eventos (borradores). El motor y validar no los usan; no hace falta escribirlos.
 
 ## Ejemplo mínimo de evento
 { "conds": [{ "op": "collides", "args": ["Heroe", "Moneda"] }],

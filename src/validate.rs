@@ -131,7 +131,7 @@ pub fn validate(p: &Project, base: Option<&Path>) -> Vec<String> {
 }
 
 fn graph_lines(c: &Ctx, g: &nodos::Graph, here: &str, out: &mut Vec<String>) {
-    for (id, m) in graph(c, g) {
+    for (id, m) in graph(c, &nodos::compile_mapped(g)) {
         let n = id.and_then(|id| g.nodes.iter().find(|n| n.id == id));
         let at = n.map_or(String::new(), |n| format!(" › nodo {} ({})", n.id, nodos::title(n)));
         out.push(format!("{here} › grafo «{}»{at}: {m}", g.name));
@@ -141,20 +141,29 @@ fn graph_lines(c: &Ctx, g: &nodos::Graph, here: &str, out: &mut Vec<String>) {
 /// Problemas de un grafo, cada uno con el nodo donde está: errores de compilación y luego
 /// los de validar los eventos que salen de él. `scene` = None para el grafo de una función.
 pub fn graph_problems(p: &Project, scene: Option<&Scene>, g: &nodos::Graph, base: Option<&Path>) -> Vec<(Option<nodos::NodeId>, String)> {
+    with_ctx(p, scene, base, |c| graph(c, &nodos::compile_mapped(g)))
+}
+
+/// Como `graph_problems`, para la hoja vista como nodos (`canon` = nodos que vienen de la hoja, ver `nodos::compile_sheet`):
+/// errores de los nodos nuevos y luego los de revisar los eventos de la hoja, cada uno en su nodo.
+pub fn sheet_problems(p: &Project, scene: Option<&Scene>, g: &nodos::Graph, canon: &BTreeSet<nodos::NodeId>, base: Option<&Path>) -> Vec<(Option<nodos::NodeId>, String)> {
+    with_ctx(p, scene, base, |c| graph(c, &nodos::compile_sheet(g, canon)))
+}
+
+fn with_ctx<T>(p: &Project, scene: Option<&Scene>, base: Option<&Path>, f: impl FnOnce(&Ctx) -> T) -> T {
     let file_ok = |f: &str| base.is_none_or(|b| b.join(f).is_file());
     let all: Vec<&ObjectDef> = p.objects.iter().chain(p.scenes.iter().flat_map(|s| s.objects.iter())).collect();
     match scene {
         Some(s) => {
             let objs: Vec<&ObjectDef> = p.objects_of(s).collect();
             let layers: Vec<&str> = s.layers.iter().map(|l| l.name.as_str()).collect();
-            graph(&Ctx { p, objs: &objs, groups: s.groups.keys().map(String::as_str).collect(), layers: &layers, file_ok: &file_ok }, g)
+            f(&Ctx { p, objs: &objs, groups: s.groups.keys().map(String::as_str).collect(), layers: &layers, file_ok: &file_ok })
         }
-        None => graph(&Ctx { p, objs: &all, groups: p.scenes.iter().flat_map(|s| s.groups.keys().map(String::as_str)).collect(), layers: &[], file_ok: &file_ok }, g),
+        None => f(&Ctx { p, objs: &all, groups: p.scenes.iter().flat_map(|s| s.groups.keys().map(String::as_str)).collect(), layers: &[], file_ok: &file_ok }),
     }
 }
 
-fn graph(c: &Ctx, g: &nodos::Graph) -> Vec<(Option<nodos::NodeId>, String)> {
-    let comp = nodos::compile_mapped(g);
+fn graph(c: &Ctx, comp: &nodos::Compiled) -> Vec<(Option<nodos::NodeId>, String)> {
     let mut res: Vec<(Option<nodos::NodeId>, String)> = comp.errors.iter().map(|e| (e.node, e.msg.clone())).collect();
     graph_events(c, &comp.events, &comp.origins, &mut res);
     res
