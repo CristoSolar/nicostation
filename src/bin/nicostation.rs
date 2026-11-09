@@ -134,6 +134,7 @@ async fn loading(n: usize, m: usize, last: &mut f64, image: Option<&Texture2D>) 
         return;
     }
     *last = get_time();
+    traza(&format!("cargando {n}/{m}: dibujando"));
     let (sw, sh) = (screen_width(), screen_height());
     clear_background(Color::from_rgba(12, 12, 14, 255));
     if let Some(t) = image {
@@ -151,7 +152,9 @@ async fn loading(n: usize, m: usize, last: &mut f64, image: Option<&Texture2D>) 
         let tw = measure_text(&t, None, 24, 1.).width;
         draw_text(&t, (sw - tw) / 2., y - 16., 24., Color::new(1., 1., 1., 0.85));
     }
-    next_frame().await
+    traza("cargando: mostrando cuadro");
+    next_frame().await;
+    traza("cargando: cuadro mostrado");
 }
 
 /// Botones táctiles: (centro, radio, tecla). Cruceta de 4 direcciones o izquierda/derecha, más el botón de acción.
@@ -308,7 +311,57 @@ fn android_context() {
     });
 }
 
+/// Registro de arranque opcional: `NICOSTATION_LOG=archivo` anota cada etapa (para diagnosticar equipos raros).
+fn traza(msg: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(path) = std::env::var_os("NICOSTATION_LOG") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{msg}");
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = msg;
+}
+
+/// Si el juego falla, que se entienda por qué: en Windows (sin consola) un cuadro de diálogo,
+/// y en todos lados el mensaje en el registro de arranque.
+fn avisar_fallos() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info.payload().downcast_ref::<&str>().map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_else(|| "error desconocido".into());
+        traza(&format!("FALLO: {msg} ({})", info.location().map(|l| l.to_string()).unwrap_or_default()));
+        #[cfg(windows)]
+        {
+            let pista = if msg.contains("WGL") || msg.contains("OpenGL") || msg.contains("GL_") {
+                "\n\nEste computador no tiene OpenGL 2.1 o más nuevo. Actualiza el controlador de la tarjeta de video."
+            } else {
+                ""
+            };
+            mensaje_windows("No se pudo abrir el juego", &format!("{msg}{pista}"));
+        }
+        prev(info);
+    }));
+}
+
+#[cfg(windows)]
+fn mensaje_windows(titulo: &str, texto: &str) {
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(hwnd: *mut core::ffi::c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    }
+    let w = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (t, c) = (w(texto), w(titulo));
+    // SAFETY: cadenas UTF-16 terminadas en 0 que viven durante la llamada; ventana dueña nula.
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), 0x10); // MB_ICONERROR
+    }
+}
+
 fn main() {
+    avisar_fallos();
+    traza("inicio");
     #[cfg(target_os = "android")]
     android_context();
     let conf = conf(); // antes de cambiar de carpeta: lee el proyecto con la ruta original
@@ -327,6 +380,7 @@ fn main() {
             std::env::set_current_dir(dir).expect("no pude entrar a la carpeta del proyecto");
         }
     }
+    traza("abriendo ventana");
     macroquad::Window::from_config(conf, game());
 }
 
@@ -351,6 +405,7 @@ fn text_block(gfx: &Gfx, font: &str, size: f32, wrap: f32, txt: &str) -> (Vec<(S
 }
 
 async fn game() {
+    traza("ventana lista");
     let capture = opts().capture.clone();
     let (file, src) = match embedded() {
         Some(pk) => (pk.project.clone(), pk.project_json().to_vec()),
@@ -407,7 +462,9 @@ async fn game() {
             Err(e) => eprintln!("fuente {f}: {e}"),
         }
     }
+    traza("iniciando audio");
     let mut snd = audio::Platform::new(capture.is_none());
+    traza("audio listo");
     for (n, f) in sounds.iter().enumerate() {
         loading(images.len() + fonts.len() + n, total, &mut last, loading_img.as_ref()).await;
         match read_file(f).await {
@@ -441,7 +498,9 @@ async fn game() {
     // La partida guardada tiene que estar antes del primer paso (los eventos «al empezar» la leen).
     world.storage = guardado::load(&game_name);
     let mut mixer = audio::Mixer::default();
+    traza("iniciando mandos");
     let mut pads = mando::Platform::new();
+    traza("mandos listos; empieza el juego");
     let mut pad_prev: HashSet<String> = HashSet::new();
     // Reloj del juego (para los fondos que se desplazan y las ondas).
     let mut clock = 0f32;
