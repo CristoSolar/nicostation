@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Lista de eventos que se edita: la de una escena o la de una función.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Target {
     Scene(usize),
     Func(usize),
@@ -156,9 +156,20 @@ pub fn sheet(ui: &mut Ui, evs: &mut Vec<Event>, path: &[usize], objs: &[String],
     }
 }
 
+thread_local! {
+    /// Evento a resaltar y mostrar (lo pide «Buscar»).
+    static SALTO: std::cell::RefCell<Option<Vec<usize>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Pide resaltar (y llevar a la vista) el evento con esta ruta en el próximo dibujo de la hoja.
+pub fn set_salto(p: Option<Vec<usize>>) {
+    SALTO.with(|s| *s.borrow_mut() = p);
+}
+
 fn event_ui(ui: &mut Ui, e: &mut Event, p: &[usize], objs: &[String], out: &mut Salida) -> Option<A> {
     let mut act = None;
-    ui.scope(|ui| {
+    let salto = SALTO.with(|s| s.borrow().as_deref() == Some(p));
+    let r = ui.scope(|ui| {
         if e.disabled {
             ui.multiply_opacity(0.45);
         }
@@ -177,6 +188,11 @@ fn event_ui(ui: &mut Ui, e: &mut Event, p: &[usize], objs: &[String], out: &mut 
             });
         });
     });
+    if salto {
+        let rect = r.response.rect.expand(2.);
+        ui.painter().rect_stroke(rect, R, egui::Stroke::new(2., ACCENT), egui::StrokeKind::Outside);
+        ui.scroll_to_rect(rect, Some(Align::Center));
+    }
     act
 }
 
@@ -639,7 +655,15 @@ fn params_ui(ui: &mut Ui, ins: &mut Instr, l: &Lists) {
             let v = &mut a[k];
             match t {
                 P::Object => drop(combo(ui, k, v, &l.objs, "(elegir)")),
-                P::Key => drop(combo(ui, k, v, catalog::KEYS, "(elegir)")),
+                P::Key => {
+                    egui::ComboBox::from_id_salt(k).selected_text(if v.is_empty() { "(elegir)".to_string() } else { catalog::key_label(v) }).show_ui(ui, |ui| {
+                        for key in catalog::KEYS {
+                            if ui.selectable_label(v == key, catalog::key_label(key)).clicked() {
+                                *v = key.to_string();
+                            }
+                        }
+                    });
+                }
                 P::Mouse => drop(combo(ui, k, v, catalog::MOUSE, "(elegir)")),
                 P::Op => drop(combo(ui, k, v, catalog::OPS, "(elegir)")),
                 P::Ease => drop(combo(ui, k, v, catalog::EASES, "(elegir)")),

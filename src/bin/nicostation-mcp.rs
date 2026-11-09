@@ -1092,7 +1092,7 @@ Cámara: camera_follow(obj, suavidad), camera_bounds(x0,y0,x1,y1), camera_shake(
 Raycast: la condición raycast(desde, ángulo, distancia, objetivo) tira un rayo desde el centro de la primera instancia elegida
 de «desde» y elige la instancia de «objetivo» que toca primero (usa las formas de choque de cualquier objeto). Después,
 ray_x / ray_y = punto donde tocó (o el final del rayo si no tocó). Con "not": se cumple si no toca nada.
-Audio: play_sound(archivo, volumen, canal?) — con canal, reemplaza lo que sonaba en ese canal (voces, pasos);
+Audio: play_sound(archivo, volumen, canal?): con canal, reemplaza lo que sonaba en ese canal (voces, pasos);
 play_music(archivo, volumen, fundido_s?), channel_volume(canal, volumen, seg) (el canal "musica" es la música),
 stop_channel(canal), stop_music, stop_sound(archivo).
 Listas y estructuras: list_add(var, v), list_set(var, posición|campo, v), list_remove(var, posición|campo), list_clear(var);

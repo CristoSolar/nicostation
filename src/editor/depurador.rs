@@ -28,6 +28,7 @@ pub fn panel(ui: &mut Ui, s: &mut Sesion, facil: bool) {
                     (Pestana::Cajitas, "Variables".into()),
                     (Pestana::Registro, if avisos > 0 { format!("Registro ({avisos})") } else { "Registro".into() }),
                     (Pestana::Rendimiento, "Rendimiento".into()),
+                    (Pestana::Perfil, "Perfilador".into()),
                 ] {
                     if ui.add(egui::Button::selectable(s.pestana == p, t).frame_when_inactive(s.pestana == p)).clicked() {
                         s.pestana = p;
@@ -51,6 +52,7 @@ pub fn panel(ui: &mut Ui, s: &mut Sesion, facil: bool) {
         Pestana::Cajitas => cajitas(ui, s, true),
         Pestana::Registro => registro(ui, s, false),
         Pestana::Rendimiento => rendimiento(ui, s),
+        Pestana::Perfil => perfilador(ui, s),
     });
 }
 
@@ -84,7 +86,8 @@ fn mini(ui: &mut Ui, s: &Sesion, obj: &str, lado: f32) {
     p.rect_filled(r, 4, SURFACE_HOVER);
     let full = Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.));
     match s.world.object_def(obj).map(|d| &d.kind) {
-        Some(Kind::Background { .. } | Kind::Particles(_)) => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::SPARKLE, FontId::proportional(lado * 0.6), TEXT_SOFT)),
+        Some(Kind::Background { .. }) => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::MOUNTAINS, FontId::proportional(lado * 0.6), TEXT_SOFT)),
+        Some(Kind::Particles(_)) => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::SPARKLE, FontId::proportional(lado * 0.6), TEXT_SOFT)),
         Some(Kind::Mesh { .. }) => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::CUBE, FontId::proportional(lado * 0.6), TEXT_SOFT)),
         Some(Kind::Light { .. }) => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::LIGHTBULB, FontId::proportional(lado * 0.6), TEXT_SOFT)),
         Some(Kind::Camera3d { .. }) => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::CAMERA, FontId::proportional(lado * 0.6), TEXT_SOFT)),
@@ -356,6 +359,66 @@ fn registro(ui: &mut Ui, s: &mut Sesion, facil: bool) {
             ui.add(egui::Label::new(RichText::new(t).color(if l.tipo == Tipo::Aviso { WARN } else { TEXT })).wrap());
         });
     }
+}
+
+/// Milisegundos en la unidad más legible (µs si es muy poco).
+fn ms_txt(ms: f32) -> String {
+    if ms < 0.1 { format!("{:.0} µs", ms * 1000.) } else { format!("{ms:.2} ms") }
+}
+
+/// Tabla del perfilador: qué se lleva el tiempo de cada paso (eventos de primer nivel y comportamientos).
+fn perfilador(ui: &mut Ui, s: &mut Sesion) {
+    let ult = s.pasos_ms.back().copied().unwrap_or(0.);
+    let prom = if s.pasos_ms.is_empty() { 0. } else { s.pasos_ms.iter().sum::<f32>() / s.pasos_ms.len() as f32 };
+    let medido: f32 = s.perfil.iter().map(|e| e.1).sum();
+    egui::Grid::new("perf_tot").num_columns(2).spacing([12., 4.]).show(ui, |ui| {
+        for (n, t) in [
+            ("Paso completo (último)", ms_txt(ult)),
+            ("Paso completo (promedio)", ms_txt(prom)),
+            ("Medido por partes", ms_txt(medido)),
+            ("Resto del motor", ms_txt((prom - medido).max(0.))),
+        ] {
+            lbl(ui, n);
+            ui.label(RichText::new(t).monospace());
+            ui.end_row();
+        }
+    });
+    let presupuesto = 1000. / 60.;
+    let uso = prom / presupuesto;
+    ui.add(egui::ProgressBar::new(uso.min(1.)).text(format!("{:.1} % de un cuadro de 60 fps", uso * 100.)).fill(if uso > 0.8 { DANGER } else if uso > 0.5 { WARN } else { OK }));
+    ui.add_space(8.);
+    if s.perfil.is_empty() {
+        ui.label(muted("El motor todavía no mandó tiempos (se miden mientras el juego corre)."));
+        return;
+    }
+    let mut filas: Vec<&(String, f32, f32, f32)> = s.perfil.iter().collect();
+    filas.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let tope = filas.first().map_or(1., |e| e.1.max(e.2)).max(0.001);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Qué").small().color(TEXT_MUTED));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new("promedio / máximo").small().color(TEXT_MUTED));
+        });
+    });
+    for (k, (n, avg, max, _)) in filas.into_iter().enumerate() {
+        let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.), Sense::hover());
+        let p = ui.painter();
+        if k % 2 == 0 {
+            p.rect_filled(r, 3, SURFACE);
+        }
+        let barra = Rect::from_min_size(r.min, Vec2::new(r.width() * (avg / tope).clamp(0., 1.), r.height()));
+        p.rect_filled(barra, 3, ACCENT.gamma_multiply(0.28));
+        let pico = r.left() + r.width() * (max / tope).clamp(0., 1.);
+        p.line_segment([Pos2::new(pico, r.top() + 3.), Pos2::new(pico, r.bottom() - 3.)], Stroke::new(1.5, ACCENT));
+        let t = p.layout_no_wrap(n.clone(), FontId::proportional(13.), TEXT);
+        let tw = r.width() - 110.;
+        let t = if t.size().x > tw { p.layout(n.clone(), FontId::proportional(12.), TEXT, tw) } else { t };
+        p.galley(Pos2::new(r.left() + 6., r.center().y - t.size().y / 2.), t, TEXT);
+        p.text(r.right_center() - Vec2::new(6., 0.), Align2::RIGHT_CENTER, format!("{} / {}", ms_txt(*avg), ms_txt(*max)), FontId::monospace(12.), TEXT_SOFT);
+        resp.on_hover_text(format!("{n}\npromedio {avg:.4} ms · máximo reciente {max:.4} ms\n{:.1} % del paso", if prom > 0. { avg / prom * 100. } else { 0. }));
+    }
+    ui.add_space(6.);
+    ui.label(RichText::new("La barra es el promedio; la rayita, el máximo reciente.").small().color(TEXT_MUTED));
 }
 
 fn rendimiento(ui: &mut Ui, s: &mut Sesion) {

@@ -63,6 +63,29 @@ pub fn op_icon(op: &str) -> &'static str {
     }
 }
 
+/// Frase de una instrucción ya armada con sus argumentos, como se lee en el modo fácil (para listas y búsquedas).
+pub fn frase_simple(i: &Instr) -> String {
+    let Some(m) = catalog::meta(&i.op) else { return catalog::sentence(i) };
+    let mut s = frase_de(m).to_string();
+    for (n, a) in i.args.iter().enumerate() {
+        let t = match m.params.get(n).map(|p| p.1) {
+            Some(P::Key) => catalog::key_label(a),
+            _ if es_si_no(&i.op, n) => match a.trim() {
+                "1" | "true" => "sí".into(),
+                "0" | "false" => "no".into(),
+                _ => a.clone(),
+            },
+            _ => a.clone(),
+        };
+        s = s.replace(&format!("_{n}_"), &t);
+    }
+    s = s.replace("_args_", &i.args.iter().skip(1).cloned().collect::<Vec<_>>().join(", "));
+    for n in i.args.len()..12 {
+        s = s.replace(&format!(" (capa _{n}_)"), "").replace(&format!("_{n}_"), "…");
+    }
+    if i.not { format!("NO: {s}") } else { s }
+}
+
 /// Frase del bloque para el modo fácil (algunas del catálogo se reescriben para que se lean mejor).
 fn frase_de(m: &Meta) -> &'static str {
     match m.op {
@@ -91,13 +114,17 @@ fn frase_de(m: &Meta) -> &'static str {
 
 /// Parámetros que valen sí (1) o no (0).
 fn es_si_no(op: &str, k: usize) -> bool {
-    matches!((op, k), ("flip_x", 1) | ("return", 0))
+    matches!((op, k), ("flip_x", 1) | ("return", 0) | ("set_emitting", 1))
 }
 
 /// Pregunta amable para cada parámetro.
 pub fn pregunta(op: &str, k: usize, name: &str, t: P) -> String {
     if es_si_no(op, k) {
-        return if op == "return" { "¿Qué responde?".into() } else { "¿Lo das vuelta?".into() };
+        return match op {
+            "return" => "¿Qué responde?".into(),
+            "set_emitting" => "¿Suelta partículas?".into(),
+            _ => "¿Lo das vuelta?".into(),
+        };
     }
     match (t, name) {
         (P::Object, "Otro") => "¿Con cuál otro objeto?",
@@ -661,6 +688,26 @@ pub fn teclado(ui: &mut Ui, v: &mut String) -> bool {
                 ch |= tecla(ui, v, "Right", ic::ARROW_RIGHT, k);
             });
         });
+    });
+    // Mandos: los botones llegan como teclas.
+    ui.add_space(6.);
+    let pad2 = v.starts_with("Pad2");
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(ic::GAMEPAD).size(18.).color(TEXT_MUTED));
+        ui.label(RichText::new(if pad2 { "Mando 2" } else { "Mando" }).font(sb(14.)).color(TEXT_SOFT));
+        let otro = if pad2 { "Usar el mando 1" } else { "Usar el mando 2" };
+        if ui.small_button(otro).clicked() {
+            let (de, a) = if pad2 { ("Pad2", "Pad1") } else { ("Pad1", "Pad2") };
+            *v = if v.starts_with(de) { v.replacen(de, a, 1) } else { format!("{a}A") };
+            ch = true;
+        }
+    });
+    let n = if pad2 { "Pad2" } else { "Pad1" };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::splat(4.);
+        for (b, l, w) in [("Up", ic::ARROW_UP, k), ("Down", ic::ARROW_DOWN, k), ("Left", ic::ARROW_LEFT, k), ("Right", ic::ARROW_RIGHT, k), ("A", "A", k), ("B", "B", k), ("X", "X", k), ("Y", "Y", k), ("L", "L", k), ("R", "R", k), ("Start", "Start", 52.), ("Select", "Select", 56.)] {
+            ch |= tecla(ui, v, &format!("{n}{b}"), l, w);
+        }
     });
     if !v.is_empty() {
         ui.label(RichText::new(format!("Elegiste: {}", catalog::key_label(v))).color(TEXT_SOFT));

@@ -2,10 +2,14 @@
 
 use super::facil::{self, has_ident, ident_fix, ident_ok};
 use super::iconos as ic;
+use super::lista;
 use super::tema::*;
 use eframe::egui::{self, Align, Button, CornerRadius, DragValue, FontId, Frame, Key, Layout, Margin, Rect, RichText, TextEdit, Ui, Vec2};
 use nicostation::catalog::{self, P};
 use nicostation::model::*;
+
+/// Abrir el editor de todas las listas al mostrarlas (para `--abrir lista`).
+pub static ABRIR_LISTAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // ---------- uso y renombrado ----------
 
@@ -145,8 +149,9 @@ fn tipo_icon(t: Tipo) -> &'static str {
 
 const TIPOS: [(Tipo, &str); 5] = [(Tipo::Num, "Número"), (Tipo::Txt, "Texto"), (Tipo::SiNo, "Sí / no"), (Tipo::Lista, "Lista"), (Tipo::Estructura, "Estructura")];
 
-/// Editor del valor según su tipo.
-fn valor(ui: &mut Ui, v: &mut Value) {
+/// Editor del valor según su tipo. Las listas y estructuras muestran un resumen y un botón para abrir su editor
+/// (que se dibuja debajo, con `abierta`).
+fn valor(ui: &mut Ui, v: &mut Value, abierta: egui::Id) {
     match v {
         Value::Num(n) => {
             if ui.add(Button::new(RichText::new(ic::MINUS).size(16.)).min_size(Vec2::splat(32.))).on_hover_text("Restar 1").clicked() {
@@ -158,17 +163,13 @@ fn valor(ui: &mut Ui, v: &mut Value) {
             }
         }
         Value::Str(s) => drop(ui.add(TextEdit::singleline(s).desired_width(180.).font(FontId::proportional(15.)).hint_text("texto"))),
-        // ponytail: listas y estructuras se editan como JSON; editor visual pendiente.
         Value::List(_) | Value::Map(_) => {
-            let id = ui.make_persistent_id("json");
-            let mut buf: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_else(|| serde_json::to_string(v).unwrap_or_default());
-            let r = ui.add(TextEdit::singleline(&mut buf).desired_width(220.).font(FontId::monospace(13.)).hint_text("[1, 2, 3] o {\"vida\": 3}"));
-            match serde_json::from_str::<Value>(&buf) {
-                Ok(nv @ (Value::List(_) | Value::Map(_))) if r.changed() => *v = nv,
-                Err(_) if r.has_focus() => drop(ui.label(RichText::new(ic::WARNING).color(DANGER)).on_hover_text("JSON inválido")),
-                _ => {}
+            let open = ui.data_mut(|d| *d.get_temp_mut_or(abierta, ABRIR_LISTAS.load(std::sync::atomic::Ordering::Relaxed)));
+            ui.add(egui::Label::new(RichText::new(lista::resumen(v)).color(TEXT)).truncate());
+            let (icon, t) = if open { (ic::CARET_UP, "Cerrar") } else { (ic::PENCIL, "Ver y cambiar") };
+            if ui.add(Button::new((RichText::new(icon).color(CAT_VAR), RichText::new(t))).min_size(Vec2::new(0., 32.))).clicked() {
+                ui.data_mut(|d| d.insert_temp(abierta, !open));
             }
-            ui.data_mut(|d| d.insert_temp(id, buf));
         }
         Value::Bool(b) => {
             let (icon, t, c) = if *b { (ic::TOGGLE_RIGHT, "sí", OK) } else { (ic::TOGGLE_LEFT, "no", TEXT_MUTED) };
@@ -217,9 +218,10 @@ pub fn tarjeta(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, name: &s
                     ui.add(egui::Label::new(RichText::new(name).font(sb(16.))).truncate());
                 }
             };
+            let abierta = ui.make_persistent_id("abierta");
             let fila_valor = |ui: &mut Ui, v: &mut Value| {
-                ui.label(RichText::new("vale").color(TEXT_SOFT));
-                valor(ui, v);
+                ui.label(RichText::new(if matches!(v, Value::List(_) | Value::Map(_)) { "tiene" } else { "vale" }).color(TEXT_SOFT));
+                valor(ui, v, abierta);
             };
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -251,6 +253,10 @@ pub fn tarjeta(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, name: &s
                     ui.add_space(30.);
                     fila_valor(ui, v);
                 });
+            }
+            if matches!(v, Value::List(_) | Value::Map(_)) && ui.data_mut(|d| *d.get_temp_mut_or(abierta, ABRIR_LISTAS.load(std::sync::atomic::Ordering::Relaxed))) {
+                ui.add_space(2.);
+                lista::editor(ui, "lista", v, false);
             }
             if let Some(n) = renombrar {
                 act = Some(CardAct::Renombrar(n));
@@ -322,6 +328,7 @@ fn formulario(ui: &mut Ui, n: &mut Nueva, taken: &dyn Fn(&str) -> bool) -> (Opti
                         }
                     }
                 })),
+                Tipo::Lista | Tipo::Estructura => drop(ui.label(RichText::new("vacía: cuando la crees, le agregas cosas con «Ver y cambiar»").color(TEXT_SOFT))),
                 _ => drop(ui.add(TextEdit::singleline(&mut n.valor).desired_width(200.).font(FontId::proportional(15.)))),
             }
             ui.end_row();

@@ -27,6 +27,13 @@
 //! `nodos` (Eventos en vista Nodos), `nodos-convertido` (pasa la hoja de la escena a un grafo y lo muestra),
 //! `nodos-paleta` (lo mismo, con el buscador de nodos abierto), `nodos-error` (lo mismo, con dos nodos rotos a propósito
 //! para ver los errores marcados), `nodos-eventos` (con el panel «Eventos generados»), `nodos-hoja` (la hoja vista como nodos).
+//! Estudio 2D: `particulas` (emisor nuevo con el editor de partículas), `fondo` (fondo que se repite y se mueve),
+//! `origen` / `mascara` (editor de origen o de máscara del primer sprite), `ajustes` (Ajustes del juego), `recursos`
+//! (explorador de archivos), `multi` (varias instancias elegidas, con manijas y alinear), `buscar` (buscar en eventos),
+//! `lista` (cajitas con listas y estructuras abiertas), `perfilador` (vista previa en pausa con el perfilador; mejor con `--experto`).
+//!
+//! En la escena: Shift+clic o un rectángulo eligen varias; Ctrl+C / Ctrl+V copian y pegan (también en otra escena),
+//! Ctrl+D duplica, Ctrl+A elige todo, Supr borra. En Eventos, Ctrl+F busca. Arrastrar archivos a la ventana los importa.
 //!
 //! Vista previa: F6 empieza / pausa, F7 avanza un cuadro. Con el juego enfocado (clic en él) el teclado va al juego.
 //!
@@ -70,12 +77,27 @@ mod vista;
 mod depurador;
 #[path = "../editor/nodos.rs"]
 mod nodos;
+#[path = "../editor/seleccion.rs"]
+mod seleccion;
+#[path = "../editor/recursos.rs"]
+mod recursos;
+#[path = "../editor/origen.rs"]
+mod origen;
+#[path = "../editor/lista.rs"]
+mod lista;
+#[path = "../editor/ajustes.rs"]
+mod ajustes;
+#[path = "../editor/particulas.rs"]
+mod particulas;
+#[path = "../editor/buscar.rs"]
+mod buscar;
 
 use eframe::egui::{
     self, Align, Align2, AtomExt, Button, Color32, DragValue, Frame, Key, Layout, Margin, Modifiers, PointerButton, Pos2, Rect,
     RichText, Sense, Stroke, TextEdit, Ui, Vec2,
 };
 use eventos::{InstrEdit, Res, Salida, Target};
+use seleccion::Arrastre;
 use historial::Historial;
 use iconos as ic;
 use nicostation::catalog::P;
@@ -92,6 +114,7 @@ enum Tab {
     Eventos,
     Funciones,
     Variables,
+    Recursos,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -103,7 +126,8 @@ enum Nivel {
 }
 
 const BEHAVIORS: &[&str] = &[
-    "platformer", "platform", "top_down", "bullet", "rotate", "destroy_outside", "bound_to_layout", "screen_wrap", "draggable",
+    "platformer", "platform", "top_down", "bullet", "rotate", "physics", "pathfinder", "obstacle", "destroy_outside", "bound_to_layout", "screen_wrap",
+    "draggable",
 ];
 const UNDO_HINT: &str = "Ctrl+Z para deshacer";
 /// Ancho de la columna de etiquetas en las rejillas de propiedades.
@@ -198,6 +222,28 @@ struct App {
     // ---- nodos ----
     /// Vista «Nodos» de Eventos y Mis bloques (lienzo, selección, buscador).
     nv: nodos::Vista,
+    // ---- estudio 2D ----
+    /// Más instancias elegidas además de `sel_inst` (selección múltiple).
+    sel_mas: Vec<usize>,
+    /// Lo que se arrastra en el lienzo (mover, escalar, girar, rectángulo de selección).
+    arrastre: Option<seleccion::Arrastre>,
+    /// Instancias copiadas (Ctrl+C).
+    clip: Option<seleccion::Portapapeles>,
+    /// Pegadas seguidas (cada una un poco más corrida).
+    pegadas: u32,
+    explorador: recursos::Explorador,
+    /// Diálogo de ajustes del juego abierto.
+    ajustes: bool,
+    /// Vista previa de cada emisor de partículas (por objeto).
+    psim: HashMap<String, particulas::Sim>,
+    origen_st: origen::Estado,
+    buscador: buscar::Buscador,
+    /// Fuentes del proyecto registradas en egui: ruta → lista para usar (se aplica al cuadro siguiente).
+    fuentes: vista::Fuentes,
+    /// Abrir la sección de origen y máscara en el próximo cuadro (`--abrir origen`).
+    abrir_origen: bool,
+    /// Segundos desde el cuadro anterior.
+    dt: f32,
 }
 
 /// Pregunta que sigue a «+ Sprite» y «+ Mapa».
@@ -212,7 +258,44 @@ enum PropAct {
     Dibujar(usize),
     DibujarBaldosas,
     CrearBaldosas,
+    /// Elegir (e importar si está afuera) un archivo para un campo del objeto.
+    Importar(recursos::Tipo, Campo),
 }
+
+/// Campo del objeto que recibe un archivo elegido.
+#[derive(Clone, Copy)]
+enum Campo {
+    Fondo,
+    Particulas,
+    Fuente,
+}
+
+/// Lo que necesita el panel de propiedades de un objeto.
+struct PropCx<'a> {
+    base: &'a Path,
+    files: &'a [String],
+    /// Imágenes ya cargadas de este objeto (y sus variantes «gris:» / «blanco:» para el efecto).
+    tex: &'a HashMap<String, egui::TextureHandle>,
+    usos: Option<&'a HashMap<String, usize>>,
+    facil: bool,
+    dt: f32,
+    t: f32,
+    sim: &'a mut particulas::Sim,
+    origen: &'a mut origen::Estado,
+    /// Tamaño de la pantalla del juego.
+    pantalla: Vec2,
+    /// Abrir la sección de origen y máscara (para `--abrir origen`).
+    abrir_origen: bool,
+}
+
+/// Efectos visuales: (valor, nombre fácil, nombre experto, ícono, explicación).
+const EFECTOS: [(&str, &str, &str, &str, &str); 5] = [
+    ("", "Ninguno", "Ninguno", ic::X_CIRCLE, "Se ve normal."),
+    ("flash", "Destello", "Destello", ic::SUN, "Se pone blanco, como cuando lo golpean."),
+    ("outline", "Borde", "Silueta", ic::POLYGON, "Un borde blanco alrededor (para resaltarlo)."),
+    ("grayscale", "Gris", "Escala de grises", ic::CIRCLE_HALF, "Sin colores, en gris (congelado, apagado)."),
+    ("wave", "Ondas", "Ondas", ic::WAVES, "Se ondula como si estuviera bajo el agua."),
+];
 
 fn new_scene(name: &str) -> Scene {
     Scene { name: name.into(), background: [30, 30, 40], layers: vec![Layer { name: String::new(), visible: true, fixed: false, parallax: [1., 1.] }], ..Default::default() }
@@ -224,9 +307,26 @@ fn new_project() -> Project {
         objects: vec![], scenes: vec![new_scene("Escena")], functions: vec![], plantilla: String::new(), settings: Default::default(), version: FORMAT_VERSION }
 }
 
+/// Lee y migra un proyecto (como el reproductor).
 fn load(path: &Path) -> Result<Project, String> {
-    let s = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&s).map_err(|e| e.to_string())
+    parse_project(&std::fs::read(path).map_err(|e| e.to_string())?)
+}
+
+/// Abre un proyecto para editarlo: migra formatos viejos y avisa si viene de una versión más nueva.
+fn abrir_proyecto(app: &mut App, f: PathBuf) -> bool {
+    match ajustes::cargar(&f) {
+        Ok((p, aviso)) => {
+            app.set_project(p, Some(f));
+            if let Some(a) = aviso {
+                app.say(Nivel::Warn, a);
+            }
+            true
+        }
+        Err(e) => {
+            app.say(Nivel::Error, format!("No se pudo abrir {}: {e}", f.display()));
+            false
+        }
+    }
 }
 
 /// Ruta de `p` relativa a la carpeta `base` (con `..` si hace falta).
@@ -264,6 +364,11 @@ fn name_edit(ui: &mut Ui, name: &str, w: f32, taken: &dyn Fn(&str) -> bool) -> O
 }
 
 fn parse_val(s: &str) -> Value {
+    if s.trim_start().starts_with(['[', '{']) {
+        if let Ok(v @ (Value::List(_) | Value::Map(_))) = serde_json::from_str::<Value>(s) {
+            return v;
+        }
+    }
     match s {
         "true" => Value::Bool(true),
         "false" => Value::Bool(false),
@@ -320,9 +425,17 @@ fn vars_ui(ui: &mut Ui, id: &str, vars: &mut Vars, nb: &mut String) {
     egui::Grid::new(id).num_columns(3).spacing([8., 6.]).min_col_width(LBL_W).show(ui, |ui| {
         for (k, v) in vars.iter_mut() {
             ui.label(k);
-            let mut s = v.text();
-            if ui.add(TextEdit::singleline(&mut s).desired_width(140.)).changed() {
-                *v = parse_val(&s);
+            if matches!(v, Value::List(_) | Value::Map(_)) {
+                // Listas y estructuras: editor por filas (con JSON a mano si se quiere).
+                ui.vertical(|ui| {
+                    ui.set_max_width(320.);
+                    lista::editor(ui, (id, k.as_str()), v, true);
+                });
+            } else {
+                let mut s = v.text();
+                if ui.add(TextEdit::singleline(&mut s).desired_width(140.)).on_hover_text("Número, texto, true/false, o [lista] / {estructura} en JSON").changed() {
+                    *v = parse_val(&s);
+                }
             }
             if ib(ui, ic::TRASH, "Eliminar variable").clicked() {
                 del = Some(k.clone());
@@ -339,6 +452,20 @@ fn vars_ui(ui: &mut Ui, id: &str, vars: &mut Vars, nb: &mut String) {
         if (ui.button(it(ic::PLUS, "Agregar")).clicked() || enter) && !nb.trim().is_empty() && !vars.contains_key(nb.as_str()) {
             vars.insert(std::mem::take(nb), Value::Num(0.));
         }
+        ui.menu_button(it(ic::CARET_DOWN, "Lista o estructura"), |ui| {
+            menu_spacing(ui);
+            let n = if nb.trim().is_empty() { (1..).map(|k| format!("lista{k}")).find(|n| !vars.contains_key(n)).unwrap() } else { nb.trim().to_string() };
+            if ui.button(it(ic::LIST, "Nueva lista")).clicked() && !vars.contains_key(&n) {
+                vars.insert(n.clone(), Value::List(vec![]));
+                nb.clear();
+                ui.close();
+            }
+            if ui.button(it(ic::BRACES, "Nueva estructura")).clicked() && !vars.contains_key(&n) {
+                vars.insert(n, Value::Map(Default::default()));
+                nb.clear();
+                ui.close();
+            }
+        });
     });
 }
 
@@ -412,66 +539,155 @@ fn count_events(evs: &[Event]) -> usize {
     evs.iter().map(|e| 1 + count_events(&e.sub)).sum()
 }
 
-fn beh_label(t: &str) -> &str {
-    match t {
-        "platformer" => "Personaje de plataformas",
-        "platform" => "Plataforma",
-        "top_down" => "Movimiento vista superior",
-        "bullet" => "Proyectil",
-        "rotate" => "Rotación",
-        "destroy_outside" => "Destruir fuera de pantalla",
-        "bound_to_layout" => "Limitar a la escena",
-        "screen_wrap" => "Envolver pantalla",
-        "draggable" => "Arrastrable",
+fn beh_label(t: &str, facil: bool) -> &str {
+    match (t, facil) {
+        ("platformer", _) => "Personaje de plataformas",
+        ("platform", _) => "Plataforma",
+        ("top_down", true) => "Caminar visto desde arriba",
+        ("top_down", false) => "Movimiento vista superior",
+        ("bullet", _) => "Proyectil",
+        ("rotate", true) => "Girar solo",
+        ("rotate", false) => "Rotación",
+        ("physics", true) => "Física (cae, rebota y empuja)",
+        ("physics", false) => "Física 2D",
+        ("pathfinder", true) => "Buscar el camino",
+        ("pathfinder", false) => "Buscar caminos (A*)",
+        ("obstacle", true) => "Obstáculo (lo esquivan)",
+        ("obstacle", false) => "Obstáculo para caminos",
+        ("destroy_outside", _) => "Destruir fuera de pantalla",
+        ("bound_to_layout", _) => "Limitar a la escena",
+        ("screen_wrap", _) => "Envolver pantalla",
+        ("draggable", _) => "Arrastrable",
         _ => t,
     }
 }
 
-fn field_label(k: &str) -> &str {
+fn beh_help(t: &str) -> &'static str {
+    match t {
+        "physics" => "Se mueve como en la vida real: la gravedad lo hace caer, choca, rebota y se apila con otros objetos con física.",
+        "pathfinder" => "Va hasta un punto esquivando los objetos que tienen «Obstáculo». Se le dice adónde ir con una acción.",
+        "obstacle" => "Los objetos que buscan caminos no pasan por encima de este.",
+        "platformer" => "Corre y salta sobre las plataformas con las flechas.",
+        "platform" => "Suelo o pared para los personajes de plataformas.",
+        "top_down" => "Se mueve en 4 u 8 direcciones con las flechas.",
+        "bullet" => "Avanza solo hacia donde mira.",
+        _ => "",
+    }
+}
+
+/// Etiqueta y explicación de cada campo de comportamiento.
+fn field_label(k: &str, facil: bool) -> (&str, &'static str) {
+    match (k, facil) {
+        ("max_speed", _) => ("Velocidad máx.", ""),
+        ("acceleration", _) => ("Aceleración", ""),
+        ("deceleration", _) => ("Desaceleración", ""),
+        ("gravity", _) => ("Gravedad", ""),
+        ("max_falling_speed", _) => ("Caída máx.", ""),
+        ("jump_speed", _) => ("Salto", ""),
+        ("jump_sustain_time", _) => ("Sostén salto (s)", ""),
+        ("jumpthru", _) => ("Atravesable desde abajo", ""),
+        ("allow_diagonals", _) => ("Diagonales", ""),
+        ("rotate", _) => ("Girar al moverse", "Mira hacia donde va"),
+        ("speed", _) => ("Velocidad", ""),
+        ("body", true) => ("Se mueve", ""),
+        ("body", false) => ("Cuerpo", "dynamic: lo mueven las fuerzas · static: no se mueve · kinematic: lo mueven los eventos"),
+        ("density", true) => ("Peso", "Más alto = más pesado: empuja más y cuesta moverlo"),
+        ("density", false) => ("Densidad", "Masa por área"),
+        ("friction", true) => ("Roce", "0 = resbala como hielo, 1 = no resbala"),
+        ("friction", false) => ("Fricción", "0 a 1"),
+        ("restitution", true) => ("Rebote", "0 = no rebota, 1 = rebota igual de alto"),
+        ("restitution", false) => ("Restitución", "0 = sin rebote, 1 = elástico"),
+        ("fixed_rotation", true) => ("No gira", "Nunca se da vuelta aunque choque"),
+        ("fixed_rotation", false) => ("Rotación fija", "No gira por los choques"),
+        ("gravity_scale", true) => ("Gravedad propia", "Cuánto le afecta la gravedad: 1 = normal, 0 = flota, 2 = cae el doble"),
+        ("gravity_scale", false) => ("Escala de gravedad", ""),
+        ("shape", true) => ("Forma", "La forma con la que choca"),
+        ("shape", false) => ("Forma", ""),
+        ("bullet", true) => ("Muy rápido", "Para cosas muy veloces que podrían atravesar paredes"),
+        ("bullet", false) => ("Detección continua", "Para objetos muy rápidos (CCD)"),
+        ("cell", true) => ("Paso", "Tamaño de la cuadrícula para buscar el camino"),
+        ("cell", false) => ("Celda", "Tamaño de celda de la grilla A* en px"),
+        ("diagonals", _) => ("Diagonales", "Puede caminar en diagonal"),
+        ("grabbable", true) => ("Se agarra del borde", "Los personajes pueden colgarse de su borde"),
+        ("grabbable", false) => ("Borde agarrable", "Los Platformer con «agarrar bordes» se cuelgan de aquí"),
+        ("ladder", _) => ("Escalera", "Se sube y se baja con las flechas"),
+        ("ladder_speed", _) => ("En escalera", "Velocidad al subir o bajar escaleras"),
+        ("can_grab_platforms", true) => ("Se cuelga de bordes", ""),
+        ("can_grab_platforms", false) => ("Agarrar bordes", "Se cuelga de las plataformas con «Borde agarrable»"),
+        ("can_go_down_from_jumpthru", true) => ("Baja con flecha", "Flecha abajo baja de las plataformas que se atraviesan"),
+        ("can_go_down_from_jumpthru", false) => ("Bajar de atravesables", "Flecha abajo baja de las plataformas atravesables"),
+        ("slope_max_angle", true) => ("Rampa máxima", "Hasta qué ángulo puede subir"),
+        ("slope_max_angle", false) => ("Pendiente máx. (°)", ""),
+        _ => (k, ""),
+    }
+}
+
+/// Opciones fijas de algunos campos de texto: (valor, fácil, experto).
+fn field_opts(k: &str) -> &'static [(&'static str, &'static str, &'static str)] {
     match k {
-        "max_speed" => "Velocidad máx.",
-        "acceleration" => "Aceleración",
-        "deceleration" => "Desaceleración",
-        "gravity" => "Gravedad",
-        "max_falling_speed" => "Caída máx.",
-        "jump_speed" => "Salto",
-        "jump_sustain_time" => "Sostén salto (s)",
-        "jumpthru" => "Atravesable desde abajo",
-        "allow_diagonals" => "Diagonales",
-        "rotate" => "Girar al moverse",
-        "speed" => "Velocidad",
-        _ => k,
+        "body" => &[("dynamic", "Cae y rebota", "Dinámico"), ("static", "Quieto", "Estático"), ("kinematic", "Con eventos", "Cinemático")],
+        "shape" => &[("box", "Caja", "Caja"), ("circle", "Círculo", "Círculo")],
+        _ => &[],
     }
 }
 
 /// Devuelve true si hay que quitar el comportamiento.
-fn behavior_ui(ui: &mut Ui, b: &mut Behavior, i: usize) -> bool {
+fn behavior_ui(ui: &mut Ui, b: &mut Behavior, i: usize, facil: bool) -> bool {
     let Ok(serde_json::Value::Object(mut m)) = serde_json::to_value(&*b) else { return false };
     let (mut ch, mut del) = (false, false);
     let t = m.get("type").and_then(|t| t.as_str()).unwrap_or("?").to_string();
     card(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(beh_label(&t)).font(sb(14.)));
+            let r = ui.label(RichText::new(beh_label(&t, facil)).font(sb(14.)));
+            if !beh_help(&t).is_empty() {
+                r.on_hover_text(beh_help(&t));
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| del = ib(ui, ic::TRASH, "Quitar comportamiento").clicked());
         });
+        if facil && !beh_help(&t).is_empty() {
+            ui.label(RichText::new(beh_help(&t)).small().color(TEXT_MUTED));
+        }
         let fields: Vec<_> = m.iter_mut().filter(|(k, _)| *k != "type").collect();
         if fields.is_empty() {
             return;
         }
         egui::Grid::new(("beh", i)).num_columns(2).spacing([12., 6.]).min_col_width(LBL_W).show(ui, |ui| {
             for (k, v) in fields {
+                let (nombre, ayuda) = field_label(k, facil);
+                let etiqueta = |ui: &mut Ui| {
+                    let r = ui.label(muted(nombre));
+                    if !ayuda.is_empty() {
+                        r.on_hover_text(ayuda);
+                    }
+                };
                 match v {
                     serde_json::Value::Bool(x) => {
-                        lbl(ui, field_label(k));
+                        etiqueta(ui);
                         ch |= ui.checkbox(x, "").changed();
                     }
                     serde_json::Value::Number(n) => {
-                        lbl(ui, field_label(k));
+                        etiqueta(ui);
                         let mut f = n.as_f64().unwrap_or(0.);
-                        if ui.add(DragValue::new(&mut f).speed(1.)).changed() {
+                        let r = match k.as_str() {
+                            "friction" | "restitution" => ui.add(egui::Slider::new(&mut f, 0.0..=1.0).max_decimals(2)),
+                            "density" | "gravity_scale" => ui.add(DragValue::new(&mut f).speed(0.05).range(0.0..=100.).max_decimals(2)),
+                            _ => ui.add(DragValue::new(&mut f).speed(1.)),
+                        };
+                        if r.changed() {
                             *v = json!(f);
                             ch = true;
                         }
+                    }
+                    serde_json::Value::String(sv) if !field_opts(k).is_empty() => {
+                        etiqueta(ui);
+                        seg(ui, |ui| {
+                            for (val, kid, exp) in field_opts(k) {
+                                if seg_btn(ui, sv == val, if facil { *kid } else { *exp }).clicked() && sv != val {
+                                    *sv = val.to_string();
+                                    ch = true;
+                                }
+                            }
+                        });
                     }
                     _ => continue,
                 }
@@ -554,11 +770,61 @@ fn tilemap_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, files: &[String], 
     act
 }
 
+/// Combo para elegir un archivo del proyecto de un tipo, con «(ninguno)» y un botón para buscar o importar.
+/// Devuelve true si piden buscar afuera.
+fn archivo_combo(ui: &mut Ui, id: &str, v: &mut String, files: &[String], tipo: recursos::Tipo, vacio: &str) -> bool {
+    let lista: Vec<&String> = files.iter().filter(|f| recursos::Tipo::de(f) == Some(tipo)).collect();
+    let shown = if v.is_empty() { vacio.to_string() } else { v.rsplit('/').next().unwrap_or(v).to_string() };
+    let mut buscar = false;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt(id).selected_text(shown).width(140.).show_ui(ui, |ui| {
+            if ui.selectable_label(v.is_empty(), vacio).clicked() {
+                v.clear();
+            }
+            for f in lista {
+                if ui.selectable_label(v == f, f.as_str()).clicked() {
+                    *v = f.clone();
+                }
+            }
+        }).response.on_hover_text(v.as_str());
+        buscar = ib(ui, ic::FOLDER_OPEN, "Elegir o importar un archivo").clicked();
+    });
+    buscar
+}
+
 /// Propiedades según el tipo de objeto, animaciones, comportamientos y variables.
-fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: Option<&HashMap<String, usize>>, files: &[String], tex: Option<&egui::TextureHandle>) -> Option<PropAct> {
-    let mut act = tilemap_props(ui, o, base, files, tex, kid.is_some());
+fn obj_props(ui: &mut Ui, o: &mut ObjectDef, nb: &mut String, cx: &mut PropCx) -> Option<PropAct> {
+    let facil = cx.facil;
+    let ts = match &o.kind {
+        Kind::Tilemap { tileset, .. } => cx.tex.get(tileset),
+        _ => None,
+    };
+    let mut act = tilemap_props(ui, o, cx.base, cx.files, ts, cx.usos.is_some());
     grid("objprops").show(ui, |ui| match &mut o.kind {
-        Kind::Background { .. } | Kind::Particles(_) => {} // ponytail: propiedades pendientes
+        Kind::Particles(_) => {}
+        Kind::Background { image, w, h, scroll } => {
+            lbl(ui, "Imagen");
+            if archivo_combo(ui, "fondoimg", image, cx.files, recursos::Tipo::Imagen, "(sin imagen)") {
+                act = Some(PropAct::Importar(recursos::Tipo::Imagen, Campo::Fondo));
+            }
+            ui.end_row();
+            lbl(ui, "Tamaño");
+            ui.horizontal(|ui| {
+                ui.add(DragValue::new(w).range(1..=100000).suffix(" px"));
+                ui.label(muted("×"));
+                ui.add(DragValue::new(h).range(1..=100000).suffix(" px"));
+                if ib(ui, ic::FRAME_CORNERS, "Del tamaño de la pantalla del juego").clicked() {
+                    (*w, *h) = (cx.pantalla.x, cx.pantalla.y);
+                }
+            });
+            ui.end_row();
+            lbl(ui, if facil { "Se mueve solo" } else { "Desplazamiento" });
+            ui.horizontal(|ui| {
+                ui.add(DragValue::new(&mut scroll[0]).speed(1.).range(-5000.0..=5000.).prefix("x ")).on_hover_text("Pixeles por segundo hacia la derecha (negativo: izquierda)");
+                ui.add(DragValue::new(&mut scroll[1]).speed(1.).range(-5000.0..=5000.).prefix("y ")).on_hover_text("Pixeles por segundo hacia abajo (negativo: arriba)");
+            });
+            ui.end_row();
+        }
         Kind::Box { w, h, color } => {
             lbl(ui, "Ancho");
             ui.add(DragValue::new(w).range(1..=4096));
@@ -570,15 +836,37 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
             ui.color_edit_button_srgb(color);
             ui.end_row();
         }
-        Kind::Text { text, size, color, .. } => {
+        Kind::Text { text, size, color, font, align, wrap } => {
             lbl(ui, "Texto");
-            ui.add(TextEdit::singleline(text).desired_width(150.));
+            ui.add(TextEdit::multiline(text).desired_width(170.).desired_rows(1)).on_hover_text("Puedes poner {expresiones} que se actualizan solas. Enter hace otro renglón.");
             ui.end_row();
             lbl(ui, "Tamaño");
             ui.add(DragValue::new(size).range(4..=400));
             ui.end_row();
             lbl(ui, "Color");
             ui.color_edit_button_srgb(color);
+            ui.end_row();
+            lbl(ui, if facil { "Letra" } else { "Fuente" });
+            if archivo_combo(ui, "fuente", font, cx.files, recursos::Tipo::Fuente, "(la del juego)") {
+                act = Some(PropAct::Importar(recursos::Tipo::Fuente, Campo::Fuente));
+            }
+            ui.end_row();
+            lbl(ui, if facil { "Alinear" } else { "Alineación" });
+            seg(ui, |ui| {
+                for (v, icon, tip) in [("left", ic::TEXT_ALIGN_LEFT, "A la izquierda"), ("center", ic::TEXT_ALIGN_CENTER, "Al centro"), ("right", ic::TEXT_ALIGN_RIGHT, "A la derecha")] {
+                    if seg_btn(ui, align == v, RichText::new(icon).size(16.)).on_hover_text(tip).clicked() {
+                        *align = v.into();
+                    }
+                }
+            });
+            ui.end_row();
+            lbl(ui, if facil { "Ancho del renglón" } else { "Ancho de línea" });
+            ui.horizontal(|ui| {
+                ui.add(DragValue::new(wrap).range(0..=8192).suffix(" px")).on_hover_text("Si el texto es más largo, sigue en el renglón de abajo. 0 = todo en un renglón");
+                if *wrap == 0. {
+                    ui.label(muted("un renglón"));
+                }
+            });
             ui.end_row();
         }
         Kind::Sprite { w, h, .. } => {
@@ -667,6 +955,29 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
         }
     });
     ui.add_space(4.);
+    // Fondo: vista previa del mosaico moviéndose.
+    if let Kind::Background { image, scroll, .. } = &o.kind {
+        if let Some(t) = cx.tex.get(image) {
+            let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 90.), Sense::hover());
+            let k = (60. / t.size_vec2().y).clamp(0.1, 4.);
+            let off = Vec2::new(-scroll[0], -scroll[1]) * cx.t * k;
+            vista::mosaico(ui.painter(), r, t, t.size_vec2() * k, off, Color32::WHITE);
+            ui.painter().rect_stroke(r, 4, Stroke::new(1., BORDER), egui::StrokeKind::Inside);
+            if *scroll != [0., 0.] {
+                ui.ctx().request_repaint();
+            }
+        }
+        ui.label(muted(if facil { "Se repite para llenar todo su tamaño. En una capa con «Lejanía» parece que está lejos." } else { "Mosaico que llena w × h; con paralaje en su capa da profundidad." }));
+    }
+    // Partículas: recetas, vista previa y todos los parámetros.
+    if let Kind::Particles(d) = &mut o.kind {
+        let tex = cx.tex.get(&d.image);
+        let imgs: Vec<String> = cx.files.iter().filter(|f| recursos::Tipo::de(f) == Some(recursos::Tipo::Imagen)).cloned().collect();
+        let (_, ped) = particulas::editor(ui, d, cx.sim, cx.dt, tex, &imgs, facil);
+        if ped.is_some() {
+            act = Some(PropAct::Importar(recursos::Tipo::Imagen, Campo::Particulas));
+        }
+    }
     if let Kind::Sprite { animations, .. } = &mut o.kind {
         egui::CollapsingHeader::new(section("Animaciones", Some(animations.len()))).id_salt("anims").default_open(true).show(ui, |ui| {
             let mut del = None;
@@ -705,8 +1016,8 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
                                 act = Some(PropAct::Dibujar(i));
                             }
                             if ui.button(it(ic::PLUS, "Añadir imágenes…")).clicked() {
-                                if let Some(fs) = rfd::FileDialog::new().add_filter("Imagen", &["png", "jpg", "jpeg"]).set_directory(base).pick_files() {
-                                    a.frames.extend(fs.iter().map(|f| rel(base, f)));
+                                if let Some(fs) = rfd::FileDialog::new().add_filter("Imagen", &["png", "jpg", "jpeg"]).set_directory(cx.base).pick_files() {
+                                    a.frames.extend(fs.iter().map(|f| recursos::importar(cx.base, f).unwrap_or_else(|_| rel(cx.base, f))));
                                 }
                             }
                         });
@@ -721,10 +1032,45 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
             }
         });
     }
+    // Sprite: origen y máscara sobre la primera imagen.
+    if let Kind::Sprite { animations, origin, mask, w, h } = &mut o.kind {
+        let f = animations.first().and_then(|a| a.frames.first()).cloned();
+        let tex = f.as_ref().and_then(|f| cx.tex.get(f));
+        let img = tex.map_or(Vec2::new(if *w > 0. { *w } else { 32. }, if *h > 0. { *h } else { 32. }), |t| t.size_vec2());
+        let mut hdr = egui::CollapsingHeader::new(section(if facil { "Centro y borde de choque" } else { "Origen y máscara" }, None)).id_salt("origenmask");
+        if cx.abrir_origen {
+            hdr = hdr.open(Some(true));
+        }
+        hdr.show(ui, |ui| {
+            if tex.is_none() {
+                ui.label(muted("Primero ponle una imagen (Dibujar o Añadir imágenes)."));
+            }
+            origen::editor(ui, cx.origen, tex, img, origin, mask, facil);
+        });
+    }
+    // Efecto visual (objetos 2D).
+    if !matches!(o.kind, Kind::Mesh { .. } | Kind::Light { .. } | Kind::Camera3d { .. } | Kind::Particles(_)) {
+        let n = EFECTOS.iter().position(|e| e.0 == o.effect).unwrap_or(0);
+        egui::CollapsingHeader::new(section(if facil { "Efecto" } else { "Efecto visual" }, None)).id_salt("efecto").default_open(!o.effect.is_empty()).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::splat(4.);
+                for (k, (v, kid, exp, icon, tip)) in EFECTOS.iter().enumerate() {
+                    if herr_btn(ui, k == n, icon, if facil { kid } else { exp }, tip, Vec2::new(58., 50.)).clicked() {
+                        o.effect = v.to_string();
+                    }
+                }
+            });
+            efecto_muestra(ui, o, cx);
+            ui.label(muted(EFECTOS[EFECTOS.iter().position(|e| e.0 == o.effect).unwrap_or(0)].4));
+            if !facil {
+                ui.label(RichText::new("Valor inicial de la propiedad «effect» (se cambia con eventos; «effect_amount» de 0 a 1). En el editor se ve aproximado.").small().color(TEXT_MUTED));
+            }
+        });
+    }
     egui::CollapsingHeader::new(section("Comportamientos", Some(o.behaviors.len()))).id_salt("behs").default_open(true).show(ui, |ui| {
         let mut del = None;
         for (i, b) in o.behaviors.iter_mut().enumerate() {
-            if behavior_ui(ui, b, i) {
+            if behavior_ui(ui, b, i, facil) {
                 del = Some(i);
             }
         }
@@ -733,13 +1079,15 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
         }
         egui::ComboBox::from_id_salt("addbeh").selected_text(format!("{}  Añadir comportamiento", ic::PLUS)).width(220.).show_ui(ui, |ui| {
             for t in BEHAVIORS {
-                if ui.selectable_label(false, beh_label(t)).clicked() {
+                let r = ui.selectable_label(false, beh_label(t, facil));
+                let r = if beh_help(t).is_empty() { r } else { r.on_hover_text(beh_help(t)) };
+                if r.clicked() {
                     o.behaviors.extend(new_behavior(t));
                 }
             }
         });
     });
-    match kid {
+    match cx.usos {
         Some(usos) => {
             let name = o.name.clone();
             egui::CollapsingHeader::new(section("Cajitas del objeto", Some(o.vars.len()))).id_salt("ovars").show(ui, |ui| {
@@ -749,6 +1097,45 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
         None => drop(egui::CollapsingHeader::new(section("Variables del objeto", Some(o.vars.len()))).id_salt("ovars").show(ui, |ui| vars_ui(ui, "objvars", &mut o.vars, nb))),
     }
     act
+}
+
+/// Muestra del efecto: el objeto dibujado con el efecto elegido (las ondas se mueven).
+fn efecto_muestra(ui: &mut Ui, o: &ObjectDef, cx: &PropCx) {
+    let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 84.), Sense::hover());
+    let p = ui.painter().with_clip_rect(r);
+    p.rect_filled(r, 6, Color32::from_rgb(40, 44, 60));
+    let fx = o.effect.as_str();
+    let caja = Rect::from_center_size(r.center(), Vec2::splat(56.));
+    let q = [caja.left_top(), caja.right_top(), caja.right_bottom(), caja.left_bottom()];
+    match &o.kind {
+        Kind::Sprite { animations, .. } => match animations.first().and_then(|a| a.frames.first()).and_then(|f| cx.tex.get(f).map(|t| (f, t))) {
+            Some((f, t)) => {
+                let sz = t.size_vec2();
+                let k = (64. / sz.x.max(sz.y)).min(8.);
+                let rr = Rect::from_center_size(r.center(), sz * k);
+                let q = [rr.left_top(), rr.right_top(), rr.right_bottom(), rr.left_bottom()];
+                let tx = vista::Texs { n: t, gris: cx.tex.get(&format!("gris:{f}")), blanco: cx.tex.get(&format!("blanco:{f}")) };
+                vista::sprite_fx(&p, q, false, &tx, Color32::WHITE, fx, 1., cx.t);
+            }
+            None => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::IMAGE, egui::FontId::proportional(28.), TEXT_FAINT)),
+        },
+        Kind::Box { color, .. } | Kind::Text { color, .. } => {
+            let [rr, g, b] = vista::color_fx(*color, fx, 1.);
+            let c = Color32::from_rgb(rr, g, b);
+            if matches!(o.kind, Kind::Text { .. }) {
+                p.text(r.center(), Align2::CENTER_CENTER, "Aa", egui::FontId::proportional(40.), c);
+            } else {
+                p.add(egui::Shape::convex_polygon(q.to_vec(), c, Stroke::NONE));
+                if fx == "outline" {
+                    p.add(egui::Shape::closed_line(q.to_vec(), Stroke::new(2., Color32::WHITE)));
+                }
+            }
+        }
+        _ => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::SPARKLE, egui::FontId::proportional(28.), TEXT_SOFT)),
+    }
+    if fx == "wave" {
+        ui.ctx().request_repaint();
+    }
 }
 
 fn kind_icon(k: &Kind) -> &'static str {
@@ -797,6 +1184,8 @@ impl App {
             pintor: mapa::Pintor::default(), dib: None, nuevo: None,
             inicio: None, mis: Default::default(), mis_json: String::new(), mis_sesion: HashMap::new(), t: 0.,
             vista: None, vprefs: vista::Prefs::default(), vista_partida: Vars::new(), vista_abrir: None, nv: nodos::Vista::default(),
+            sel_mas: vec![], arrastre: None, clip: None, pegadas: 0, explorador: Default::default(), ajustes: false, psim: HashMap::new(),
+            origen_st: Default::default(), buscador: Default::default(), fuentes: HashMap::new(), dt: 0., abrir_origen: false,
         }
     }
 
@@ -808,6 +1197,7 @@ impl App {
         let kids = std::mem::take(&mut self.kids);
         let (facil, grande, t) = (self.facil, self.grande, self.t);
         let vprefs = std::mem::take(&mut self.vprefs);
+        let clip = self.clip.take();
         // El avance de las misiones de este juego queda guardado por si se vuelve a abrir en la sesión.
         let mut mis_sesion = std::mem::take(&mut self.mis_sesion);
         if let Some(old) = self.path.as_ref() {
@@ -817,7 +1207,7 @@ impl App {
         if let Some(n) = path.as_ref() {
             inicio::recordar(n);
         }
-        *self = App { p, path, kids, facil, grande, t, mis, mis_sesion, vprefs, ..App::new() };
+        *self = App { p, path, kids, facil, grande, t, mis, mis_sesion, vprefs, clip, ..App::new() };
         self.now = self.json();
         self.saved = self.now.clone();
         self.hist = Historial::new(self.now.clone());
@@ -845,7 +1235,10 @@ impl App {
             self.p.scenes.push(new_scene("Escena"));
         }
         self.sc = self.sc.min(self.p.scenes.len() - 1);
-        self.sel_inst = self.sel_inst.filter(|i| *i < self.p.scenes[self.sc].instances.len());
+        let n = self.p.scenes[self.sc].instances.len();
+        self.sel_inst = self.sel_inst.filter(|i| *i < n);
+        self.sel_mas.retain(|i| *i < n);
+        self.arrastre = None;
         self.func = self.func.min(self.p.functions.len().saturating_sub(1));
         (self.ed, self.fparams, self.drag_off) = (None, None, None);
         self.sel = None;
@@ -918,10 +1311,7 @@ impl App {
 
     fn open_file(&mut self) {
         if let Some(f) = rfd::FileDialog::new().add_filter("Proyecto NicoStation", &["json"]).pick_file() {
-            match load(&f) {
-                Ok(p) => self.set_project(p, Some(f)),
-                Err(e) => self.say(Nivel::Error, format!("No se pudo abrir: {e}")),
-            }
+            abrir_proyecto(self, f);
         }
     }
 
@@ -998,6 +1388,35 @@ impl App {
         self.tex[path].clone()
     }
 
+    /// Versión gris (1) o silueta blanca (2) de una imagen, para mostrar los efectos.
+    fn tex_var(&mut self, ctx: &egui::Context, path: &str, var: u8) -> Option<egui::TextureHandle> {
+        let key = format!("{}:{path}", if var == 1 { "gris" } else { "blanco" });
+        if !self.tex.contains_key(&key) {
+            let t = image::open(self.base_dir().join(path)).ok().map(|img| ctx.load_texture(&key, vista::variante(&img.to_rgba8(), var), egui::TextureOptions::NEAREST));
+            self.tex.insert(key.clone(), t);
+        }
+        self.tex[&key].clone()
+    }
+
+    /// Registra en egui una fuente TTF/OTF del proyecto (queda lista en el cuadro siguiente).
+    fn fuente(&mut self, ctx: &egui::Context, font: &str) {
+        if font.is_empty() || self.fuentes.contains_key(font) {
+            return;
+        }
+        let estado = match std::fs::read(self.base_dir().join(font)) {
+            Ok(b) => {
+                let fam = egui::FontFamily::Name(font.into());
+                ctx.add_font(egui::epaint::text::FontInsert::new(font, egui::FontData::from_owned(b), vec![egui::epaint::text::InsertFontFamily {
+                    family: fam,
+                    priority: egui::epaint::text::FontPriority::Highest,
+                }]));
+                1
+            }
+            Err(_) => 0,
+        };
+        self.fuentes.insert(font.to_string(), estado);
+    }
+
     fn obj_size(&self, o: &ObjectDef) -> Vec2 {
         match &o.kind {
             Kind::Background { w, h, .. } => Vec2::new(*w, *h),
@@ -1006,7 +1425,8 @@ impl App {
             Kind::Mesh { size, .. } => Vec2::new(size[0] * 32., size[2] * 32.),
             Kind::Light { .. } | Kind::Camera3d { .. } => Vec2::splat(24.),
             Kind::Box { w, h, .. } => Vec2::new(*w, *h),
-            Kind::Text { text, size, .. } => Vec2::new(text.chars().count().max(1) as f32 * size * 0.55, *size),
+            Kind::Text { wrap, size, .. } if *wrap > 0. => Vec2::new(*wrap, *size),
+            Kind::Text { text, size, .. } => Vec2::new(text.lines().map(|l| l.chars().count()).max().unwrap_or(1).max(1) as f32 * size * 0.55, *size * text.lines().count().max(1) as f32),
             Kind::Sprite { w, h, animations, .. } if *w <= 0. || *h <= 0. => {
                 let t = animations.first().and_then(|a| a.frames.first()).and_then(|f| self.tex.get(f).cloned().flatten());
                 t.map_or(Vec2::splat(32.), |t| t.size_vec2())
@@ -1117,30 +1537,187 @@ impl App {
         self.sel_inst.filter(|i| *i < self.p.scenes[self.sc].instances.len())
     }
 
-    fn delete_instance(&mut self) {
-        if let Some(i) = self.sel_valid() {
-            self.snap_hist();
-            let o = self.scene().instances.remove(i).obj;
-            self.sel_inst = None;
-            self.say(Nivel::Info, format!("Eliminada instancia de «{o}» · {UNDO_HINT}"));
+    /// Todas las instancias elegidas (la principal y las demás), ordenadas y sin repetir.
+    fn seleccion(&self) -> Vec<usize> {
+        let n = self.p.scenes[self.sc].instances.len();
+        let mut v: Vec<usize> = self.sel_inst.into_iter().chain(self.sel_mas.iter().copied()).filter(|i| *i < n).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Elige una sola instancia (o ninguna).
+    fn elegir(&mut self, i: Option<usize>) {
+        self.sel_inst = i;
+        self.sel_mas.clear();
+        if let Some(i) = i {
+            self.sel_obj = Some(self.p.scenes[self.sc].instances[i].obj.clone());
         }
+    }
+
+    /// Shift+clic: agrega o saca una instancia de la selección.
+    fn alternar(&mut self, i: usize) {
+        let mut v = self.seleccion();
+        match v.iter().position(|x| *x == i) {
+            Some(k) => drop(v.remove(k)),
+            None => v.push(i),
+        }
+        self.poner_seleccion(v);
+    }
+
+    fn poner_seleccion(&mut self, v: Vec<usize>) {
+        self.sel_inst = v.last().copied();
+        self.sel_mas = v;
+        if let Some(i) = self.sel_inst {
+            self.sel_obj = Some(self.p.scenes[self.sc].instances[i].obj.clone());
+        }
+    }
+
+    /// Dónde está una instancia (posición, tamaño, giro y origen normalizado).
+    fn geo(&self, i: usize) -> Option<seleccion::Geo> {
+        let s = &self.p.scenes[self.sc];
+        let ins = s.instances.get(i)?;
+        let (sz, origin) = match self.p.objects_of(s).find(|o| o.name == ins.obj) {
+            Some(o) => {
+                let base = self.obj_size(o);
+                let origin = match &o.kind {
+                    Kind::Sprite { origin: Some(org), animations, .. } => {
+                        let img = animations.first().and_then(|a| a.frames.first()).and_then(|f| self.tex.get(f).cloned().flatten()).map_or(base, |t| t.size_vec2());
+                        Some(Vec2::new(org[0] / img.x.max(1.), org[1] / img.y.max(1.)))
+                    }
+                    Kind::Particles(_) | Kind::Light { .. } | Kind::Camera3d { .. } => Some(Vec2::splat(0.5)),
+                    _ => None,
+                };
+                (base, origin)
+            }
+            None => (Vec2::splat(32.), None),
+        };
+        let size = Vec2::new(ins.w.unwrap_or(sz.x), ins.h.unwrap_or(sz.y));
+        Some(seleccion::Geo { pos: Vec2::new(ins.x, ins.y), size, angle: ins.angle, origin })
+    }
+
+    fn delete_instance(&mut self) {
+        let v = self.seleccion();
+        if v.is_empty() {
+            return;
+        }
+        self.snap_hist();
+        let s = self.scene();
+        let mut nombres = vec![];
+        for &i in v.iter().rev() {
+            nombres.push(s.instances.remove(i).obj);
+        }
+        self.elegir(None);
+        let m = if nombres.len() == 1 { format!("Eliminada instancia de «{}»", nombres[0]) } else { format!("Eliminadas {} instancias", nombres.len()) };
+        self.say(Nivel::Info, format!("{m} · {UNDO_HINT}"));
     }
 
     fn duplicate_instance(&mut self) {
-        if let Some(i) = self.sel_valid() {
-            self.snap_hist();
-            let g = self.grid;
-            let s = self.scene();
+        let v = self.seleccion();
+        if v.is_empty() {
+            return;
+        }
+        self.snap_hist();
+        let g = self.grid;
+        let s = self.scene();
+        let n0 = s.instances.len();
+        for &i in &v {
             let mut n = s.instances[i].clone();
             (n.x, n.y) = (n.x + g, n.y + g);
             s.instances.push(n);
-            self.sel_inst = Some(s.instances.len() - 1);
-            self.say(Nivel::Info, "Instancia duplicada");
         }
+        self.poner_seleccion((n0..n0 + v.len()).collect());
+        self.say(Nivel::Info, if v.len() == 1 { "Instancia duplicada".to_string() } else { format!("{} instancias duplicadas", v.len()) });
     }
 
     fn nudge(&mut self, d: Vec2) {
-        if let Some(i) = self.sel_valid() {
+        for i in self.seleccion() {
+            let ins = &mut self.scene().instances[i];
+            (ins.x, ins.y) = (ins.x + d.x, ins.y + d.y);
+        }
+    }
+
+    /// Ctrl+C: copia las instancias elegidas (y los objetos de la escena que usan, para pegarlas en otra escena).
+    fn copiar(&mut self, ctx: &egui::Context) {
+        let v = self.seleccion();
+        if v.is_empty() {
+            return;
+        }
+        let s = &self.p.scenes[self.sc];
+        let instancias: Vec<Instance> = v.iter().map(|&i| s.instances[i].clone()).collect();
+        let mut objetos: Vec<ObjectDef> = vec![];
+        for ins in &instancias {
+            if let Some(o) = s.objects.iter().find(|o| o.name == ins.obj) {
+                if !objetos.iter().any(|x| x.name == o.name) {
+                    objetos.push(o.clone());
+                }
+            }
+        }
+        let c = seleccion::Portapapeles { instancias, objetos };
+        ctx.copy_text(c.texto());
+        let n = c.instancias.len();
+        self.clip = Some(c);
+        self.pegadas = 0;
+        self.say(Nivel::Ok, format!("{n} instancia{} copiada{} · Ctrl+V para pegar (también en otra escena)", if n == 1 { "" } else { "s" }, if n == 1 { "" } else { "s" }));
+    }
+
+    /// Ctrl+V: pega lo copiado. Con el mouse sobre el lienzo, donde está el mouse; si no, un poco corrido.
+    fn pegar(&mut self, texto: Option<String>) {
+        if let Some(c) = texto.as_deref().and_then(seleccion::Portapapeles::de_texto) {
+            self.clip = Some(c);
+        }
+        let Some(c) = self.clip.clone() else { return };
+        if c.instancias.is_empty() {
+            return;
+        }
+        self.snap_hist();
+        let sc = self.sc;
+        // Objetos que faltan en esta escena.
+        for o in &c.objetos {
+            let visible = self.p.objects_of(&self.p.scenes[sc]).any(|x| x.name == o.name);
+            if !visible {
+                self.p.scenes[sc].objects.push(o.clone());
+            }
+        }
+        self.pegadas += 1;
+        let esquina = c.esquina();
+        let destino = match self.cursor_w {
+            Some(p) if self.tab == Tab::Escena => {
+                let p = p.to_vec2();
+                if self.snap { (p / self.grid).round() * self.grid } else { p }
+            }
+            _ => esquina + Vec2::splat(self.grid * self.pegadas as f32),
+        };
+        let layer_ok: Vec<String> = self.p.scenes[sc].layers.iter().map(|l| l.name.clone()).collect();
+        let s = &mut self.p.scenes[sc];
+        let n0 = s.instances.len();
+        for ins in &c.instancias {
+            let mut n = ins.clone();
+            n.x = ins.x - esquina.x + destino.x;
+            n.y = ins.y - esquina.y + destino.y;
+            if !layer_ok.contains(&n.layer) {
+                n.layer.clear();
+            }
+            s.instances.push(n);
+        }
+        self.poner_seleccion((n0..n0 + c.instancias.len()).collect());
+        self.say(Nivel::Ok, format!("Pegado: {} instancia{} · {UNDO_HINT}", c.instancias.len(), if c.instancias.len() == 1 { "" } else { "s" }));
+    }
+
+    /// Alinea o distribuye las instancias elegidas (un paso de deshacer).
+    fn alinear(&mut self, modo: Option<seleccion::Alinear>, distribuir_h: Option<bool>) {
+        let v = self.seleccion();
+        if v.len() < 2 {
+            return;
+        }
+        let cajas: Vec<Rect> = v.iter().filter_map(|&i| self.geo(i)).map(|g| g.aabb()).collect();
+        let d = match (modo, distribuir_h) {
+            (Some(m), _) => seleccion::alinear(&cajas, m),
+            (None, Some(h)) => seleccion::distribuir(&cajas, h),
+            _ => return,
+        };
+        self.snap_hist();
+        for (&i, d) in v.iter().zip(d) {
             let ins = &mut self.scene().instances[i];
             (ins.x, ins.y) = (ins.x + d.x, ins.y + d.y);
         }
@@ -1157,8 +1734,159 @@ impl App {
         }
         self.sc = i.min(self.p.scenes.len() - 1);
         (self.sel_inst, self.sel_obj) = (None, None);
+        self.sel_mas.clear();
         self.cur_layer.clear();
         self.say(Nivel::Info, format!("Eliminada la escena «{old}» · {UNDO_HINT}"));
+    }
+
+    // ---- recursos ----
+
+    /// Copia archivos de afuera a la carpeta del juego (img/, snd/, fuentes/, modelos/). Devuelve las rutas nuevas.
+    fn importar_archivos(&mut self, fs: Vec<PathBuf>) -> Vec<String> {
+        if fs.is_empty() || !self.carpeta_ok() {
+            return vec![];
+        }
+        let base = self.base_dir();
+        let (mut ok, mut err) = (vec![], vec![]);
+        for f in fs {
+            match recursos::importar(&base, &f) {
+                Ok(r) => ok.push(r),
+                Err(e) => err.push(e),
+            }
+        }
+        self.files_at = None;
+        match (ok.len(), err.first()) {
+            (_, Some(e)) => self.say(Nivel::Warn, e.clone()),
+            (1, None) => self.say(Nivel::Ok, format!("Importado: {}", ok[0])),
+            (n, None) => self.say(Nivel::Ok, format!("Importados {n} archivos")),
+        }
+        if let Some(r) = ok.last() {
+            self.explorador.sel = Some(r.clone());
+        }
+        ok
+    }
+
+    /// Elige un archivo de un tipo (si está afuera del juego, lo copia adentro).
+    fn elegir_importar(&mut self, tipo: recursos::Tipo) -> Option<String> {
+        if !self.carpeta_ok() {
+            return None;
+        }
+        let base = self.base_dir();
+        let dir = base.join(tipo.carpeta());
+        let f = rfd::FileDialog::new().add_filter(tipo.nombre(false), tipo.extensiones()).set_directory(if dir.exists() { dir } else { base }).pick_file()?;
+        self.importar_archivos(vec![f]).pop()
+    }
+
+    fn importar_dialogo(&mut self) {
+        let exts: Vec<&str> = recursos::TIPOS.iter().flat_map(|t| t.extensiones().iter().copied()).collect();
+        if let Some(fs) = rfd::FileDialog::new().add_filter("Imágenes, sonidos, fuentes y modelos", &exts).pick_files() {
+            self.importar_archivos(fs);
+        }
+    }
+
+    /// Renombra o mueve un archivo del juego y actualiza todo lo que lo usa (y guarda, para que no queden rotos).
+    fn renombrar_recurso(&mut self, viejo: &str, nuevo: &str) {
+        let base = self.base_dir();
+        if let Err(e) = recursos::mover(&base, viejo, nuevo) {
+            return self.say(Nivel::Error, format!("No se pudo renombrar: {e}"));
+        }
+        self.snap_hist();
+        let n = recursos::renombrar_en_proyecto(&mut self.p, viejo, nuevo);
+        self.tex.retain(|k, _| !k.ends_with(viejo));
+        self.fuentes.remove(viejo);
+        self.files_at = None;
+        self.explorador.sel = Some(nuevo.to_string());
+        self.explorador.nombre = None;
+        let guardado = self.path.is_some() && self.save(false);
+        let refs = if n == 1 { "1 lugar".to_string() } else { format!("{n} lugares") };
+        self.say(Nivel::Ok, format!("«{viejo}» ahora es «{nuevo}»; actualicé {refs}{}", if guardado { " y guardé el juego" } else { "" }));
+    }
+
+    fn borrar_recurso(&mut self, f: &str) {
+        let base = self.base_dir();
+        match std::fs::remove_file(base.join(f)) {
+            Ok(()) => {
+                self.tex.retain(|k, _| !k.ends_with(f));
+                self.files_at = None;
+                self.explorador.sel = None;
+                let usos = recursos::usos(&self.p, f).len();
+                if usos > 0 {
+                    self.say(Nivel::Warn, format!("Borrado «{f}»: {usos} lugar{} del juego lo usaba{}", if usos == 1 { "" } else { "es" }, if usos == 1 { "" } else { "n" }));
+                } else {
+                    self.say(Nivel::Info, format!("Borrado «{f}»"));
+                }
+            }
+            Err(e) => self.say(Nivel::Error, format!("No se pudo borrar: {e}")),
+        }
+    }
+
+    /// Pestaña Recursos.
+    fn recursos_tab(&mut self, ui: &mut Ui) {
+        let base = self.base_dir();
+        if self.files_at.is_none_or(|t| t.elapsed().as_secs() >= 3) {
+            self.files = buscar_archivos(&base);
+            self.files_at = Some(std::time::Instant::now());
+        }
+        let files = self.files.clone();
+        let ctx = ui.ctx().clone();
+        let mut thumbs = HashMap::new();
+        for f in recursos::a_precargar(&self.explorador, &files) {
+            if let Some(t) = self.texture(&ctx, &f) {
+                thumbs.insert(f, t);
+            }
+        }
+        let refs = recursos::referencias(&self.p);
+        let guardado = self.path.is_some();
+        match recursos::ui(ui, &mut self.explorador, &base, &files, &thumbs, &refs, self.facil, guardado) {
+            Some(recursos::Accion::Importar) => self.importar_dialogo(),
+            Some(recursos::Accion::Renombrar(a, b)) => self.renombrar_recurso(&a, &b),
+            Some(recursos::Accion::Borrar(f)) => self.borrar_recurso(&f),
+            None => {}
+        }
+    }
+
+    // ---- buscar en eventos ----
+
+    fn barra_buscar(&mut self, ui: &mut Ui) {
+        if !self.buscador.abierto {
+            return;
+        }
+        let now = self.now.clone();
+        self.buscador.actualizar(&self.p, self.sc, &now, self.facil);
+        let r = buscar::barra(ui, &mut self.buscador, self.facil);
+        ui.add_space(6.);
+        match r {
+            Some(buscar::Accion::Ir(h)) => self.ir_a(&h),
+            Some(buscar::Accion::Reemplazar(todos)) if !self.facil => {
+                let b = &self.buscador;
+                let hs: Vec<buscar::Hallazgo> = if todos { b.resultados.clone() } else { b.resultados.get(b.actual).cloned().into_iter().collect() };
+                let (q, rr) = (b.texto.clone(), b.reemplazo.clone());
+                self.snap_hist();
+                let n = buscar::reemplazar(&mut self.p, &hs, &q, &rr);
+                self.say(if n > 0 { Nivel::Ok } else { Nivel::Info }, format!("{n} reemplazo{} · {UNDO_HINT}", if n == 1 { "" } else { "s" }));
+            }
+            _ => {}
+        }
+    }
+
+    /// Lleva a un resultado de la búsqueda: su hoja, su evento resaltado.
+    fn ir_a(&mut self, h: &buscar::Hallazgo) {
+        match h.target {
+            Target::Scene(i) => {
+                if self.sc != i {
+                    self.sc = i;
+                    self.elegir(None);
+                }
+                self.tab = Tab::Eventos;
+                self.nv.en_escena = false;
+            }
+            Target::Func(i) => {
+                self.func = i;
+                self.tab = Tab::Funciones;
+                self.nv.en_func = false;
+            }
+        }
+        self.jump = Some((h.ev.clone(), self.t + 3.));
     }
 
     // ---- barra superior ----
@@ -1193,6 +1921,13 @@ impl App {
         ui.separator();
         if ui.button(it(ic::GLOBE, "Exportar web…")).clicked() {
             self.open_export();
+        }
+        ui.separator();
+        if ui.button(it(ic::GEAR, "Ajustes del juego…")).clicked() {
+            self.ajustes = true;
+        }
+        if ui.button(it(ic::FILE_IMAGE, "Importar archivos…")).on_hover_text("Imágenes, sonidos, fuentes o modelos. También puedes arrastrarlos a la ventana.").clicked() {
+            self.importar_dialogo();
         }
         ui.separator();
         if ui.button(it(ic::SIGN_OUT, "Salir")).clicked() && self.discard_ok() {
@@ -1328,9 +2063,9 @@ impl App {
         Frame::new().fill(BG).stroke((1., BORDER)).corner_radius(R + 2).inner_margin(3).show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 2.;
             let tabs = if self.facil {
-                [(Tab::Escena, ic::SQUARES, "Escena"), (Tab::Eventos, ic::LIST, "Eventos"), (Tab::Funciones, ic::PUZZLE, "Mis bloques"), (Tab::Variables, ic::ARCHIVE_BOX, "Cajitas")]
+                [(Tab::Escena, ic::SQUARES, "Escena"), (Tab::Eventos, ic::LIST, "Eventos"), (Tab::Funciones, ic::PUZZLE, "Mis bloques"), (Tab::Variables, ic::ARCHIVE_BOX, "Cajitas"), (Tab::Recursos, ic::FOLDER_OPEN, "Archivos")]
             } else {
-                [(Tab::Escena, ic::SQUARES, "Escena"), (Tab::Eventos, ic::LIST, "Eventos"), (Tab::Funciones, ic::FUNCTION, "Funciones"), (Tab::Variables, ic::BRACES, "Variables")]
+                [(Tab::Escena, ic::SQUARES, "Escena"), (Tab::Eventos, ic::LIST, "Eventos"), (Tab::Funciones, ic::FUNCTION, "Funciones"), (Tab::Variables, ic::BRACES, "Variables"), (Tab::Recursos, ic::FOLDER_OPEN, "Recursos")]
             };
             for (k, (t, icon, name)) in tabs.into_iter().enumerate() {
                 let sel = self.tab == t;
@@ -1391,6 +2126,8 @@ impl App {
         }
         if self.sc != sc {
             (self.sel_inst, self.sel_obj) = (None, None);
+            self.sel_mas.clear();
+        self.sel_mas.clear();
             self.cur_layer.clear();
             return;
         }
@@ -1409,6 +2146,22 @@ impl App {
             lbl(ui, "Fondo");
             ui.color_edit_button_srgb(&mut self.p.scenes[sc].background);
             ui.end_row();
+            // Gravedad de la física: solo si algún objeto de la escena tiene «Física».
+            let fisica = self.p.objects_of(&self.p.scenes[sc]).any(|o| o.behaviors.iter().any(|b| matches!(b, Behavior::Physics { .. })));
+            if fisica {
+                let g = &mut self.p.scenes[sc].gravity;
+                if self.facil {
+                    lbl(ui, "Fuerza de caída");
+                    ui.add(egui::Slider::new(&mut g[1], -2000.0..=3000.).max_decimals(0)).on_hover_text("Qué tan fuerte caen las cosas con física (980 = como en la Tierra; negativo = caen hacia arriba)");
+                } else {
+                    lbl(ui, "Gravedad");
+                    ui.horizontal(|ui| {
+                        ui.add(DragValue::new(&mut g[0]).speed(5.).prefix("x "));
+                        ui.add(DragValue::new(&mut g[1]).speed(5.).prefix("y "));
+                    }).response.on_hover_text("Física 2D, en px/s² (por defecto 0, 980)");
+                }
+                ui.end_row();
+            }
         });
         ui.add_space(4.);
         ui.separator();
@@ -1433,6 +2186,9 @@ impl App {
                 combo(ui, "first", &mut self.p.first_scene, &names, "(ninguna)");
                 ui.end_row();
             });
+            if ui.button(it(ic::GEAR, "Ajustes del juego…")).on_hover_text("Escalado, pixel art, FPS, ícono y pantalla de carga").clicked() {
+                self.ajustes = true;
+            }
         });
     }
 
@@ -1483,7 +2239,44 @@ impl App {
             if ui.add(Button::new(it(ic::MAP, "Mapa"))).on_hover_text(mapa::TEXTO_NINOS).clicked() {
                 self.nuevo_mapa();
             }
+            if ui.add(Button::new(it(ic::MOUNTAINS, "Fondo"))).on_hover_text("Una imagen que se repite: cielo, pasto, agua").clicked() {
+                self.nuevo_fondo();
+            }
+            if ui.add(Button::new(it(ic::SPARKLE, "Partículas"))).on_hover_text("Fuego, humo, chispas, lluvia, nieve, explosiones, magia").clicked() {
+                self.nuevas_particulas(0);
+            }
         });
+    }
+
+    /// «+ Fondo»: imagen que se repite del tamaño de la pantalla, detrás de todo.
+    fn nuevo_fondo(&mut self) {
+        self.snap_hist();
+        let n = self.nombre_libre("Fondo");
+        let image = self.files.iter().find(|f| recursos::Tipo::de(f) == Some(recursos::Tipo::Imagen) && f.to_lowercase().contains("fondo")).cloned().unwrap_or_default();
+        let kind = Kind::Background { image, w: self.p.width, h: self.p.height, scroll: [0., 0.] };
+        let layer = self.p.scenes[self.sc].layers.iter().find(|l| l.name.to_lowercase().contains("fondo")).map(|l| l.name.clone()).unwrap_or_default();
+        let s = self.scene();
+        s.objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![], vars: Vars::new(), effect: String::new() });
+        s.instances.push(Instance { obj: n.clone(), layer, z: -100., ..Default::default() });
+        let i = s.instances.len() - 1;
+        self.elegir(Some(i));
+        self.sel_obj = Some(n);
+        self.say(Nivel::Ok, "Fondo nuevo: elige su imagen en las propiedades (a la derecha)");
+    }
+
+    /// «+ Partículas»: emisor con la receta `k` (0 = fuego), en el medio de la pantalla.
+    fn nuevas_particulas(&mut self, k: usize) {
+        self.snap_hist();
+        let (nombre, _, def) = particulas::presets().swap_remove(k.min(6));
+        let n = self.nombre_libre(&format!("Particulas{}", if k == 0 { String::new() } else { nombre.to_string() }).replace(['ó', ' '], ""));
+        let (x, y) = (self.p.width / 2., self.p.height / 2.);
+        let layer = self.cur_layer.clone();
+        let s = self.scene();
+        s.objects.push(ObjectDef { name: n.clone(), kind: Kind::Particles(Box::new(def)), behaviors: vec![], vars: Vars::new(), effect: String::new() });
+        s.instances.push(Instance { obj: n.clone(), x, y, layer, ..Default::default() });
+        let i = s.instances.len() - 1;
+        self.elegir(Some(i));
+        self.say(Nivel::Ok, format!("Partículas nuevas ({nombre}): cámbialas con las recetas y los ajustes de la derecha"));
     }
 
     fn nombre_libre(&self, base: &str) -> String {
@@ -1705,8 +2498,25 @@ impl App {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.spacing_mut().button_padding = Vec2::new(5., 5.);
                         let b = Button::new(RichText::new(ic::DOTS).size(16.)).frame_when_inactive(false).min_size(Vec2::splat(26.));
+                        let facil = self.facil;
                         let (r, _) = egui::containers::menu::MenuButton::from_button(b).ui(ui, |ui| {
                             menu_spacing(ui);
+                            ui.label(RichText::new(if facil { "Lejanía" } else { "Paralaje" }).font(sb(13.)).color(TEXT_MUTED));
+                            if facil {
+                                // Lejanía 0 = sigue a la cámara; 1 = quieta (como el cielo).
+                                let mut lejos = 1. - l.parallax[0];
+                                let t = if lejos < 0.05 { "cerca" } else if lejos > 0.95 { "quieta" } else { "lejos" };
+                                if ui.add(egui::Slider::new(&mut lejos, 0.0..=1.0).show_value(false).text(t))
+                                    .on_hover_text("Las cosas lejanas se mueven más despacio cuando la cámara avanza: así parece que tienen profundidad").changed() {
+                                    l.parallax = [1. - lejos, 1. - lejos];
+                                }
+                            } else {
+                                ui.horizontal(|ui| {
+                                    ui.add(DragValue::new(&mut l.parallax[0]).speed(0.01).range(-2.0..=4.).prefix("x ")).on_hover_text("1 = sigue a la cámara, 0 = fija, 0.5 = a la mitad");
+                                    ui.add(DragValue::new(&mut l.parallax[1]).speed(0.01).range(-2.0..=4.).prefix("y "));
+                                });
+                            }
+                            ui.separator();
                             if ui.add_enabled(i > 0, Button::new(it(ic::CARET_UP, "Subir (se dibuja antes)"))).clicked() {
                                 act = Some((i, -1));
                             }
@@ -1720,7 +2530,11 @@ impl App {
                                 }
                             }
                         });
-                        r.on_hover_text("Más opciones de la capa");
+                        r.on_hover_text("Más opciones de la capa (lejanía, orden)");
+                        if l.parallax != [1., 1.] {
+                            let t = if self.facil { format!("{} {:.0}%", ic::MOUNTAINS, (1. - l.parallax[0]) * 100.) } else { format!("{:.2}", l.parallax[0]) };
+                            ui.label(RichText::new(t).small().color(TEXT_MUTED)).on_hover_text(if self.facil { "Lejanía" } else { "Paralaje x" });
+                        }
                         let hud = Button::selectable(l.fixed, RichText::new("HUD").small()).frame_when_inactive(l.fixed);
                         if ui.add(hud).on_hover_text("Fija en pantalla: no sigue a la cámara").clicked() {
                             l.fixed = !l.fixed;
@@ -1771,9 +2585,93 @@ impl App {
 
     // ---- panel derecho ----
 
+    /// Panel de varias instancias elegidas: alinear, distribuir, capa y z para todas.
+    fn right_varias(&mut self, ui: &mut Ui, v: &[usize]) {
+        let sc = self.sc;
+        let f = self.facil;
+        header(ui, ic::SELECTION, if f { "Varias cosas elegidas" } else { "Selección" }, &format!("{} instancias", v.len()));
+        ui.label(muted(if f { "Arrástralas para moverlas juntas. Las manijas las agrandan o las giran a todas." } else { "Arrastrar mueve todas; manijas: escalar (Shift = proporción) y girar (Shift = de a 15°)." }));
+        ui.add_space(4.);
+        ui.label(RichText::new(if f { "Ordenar" } else { "Alinear" }).font(sb(13.)).color(TEXT_MUTED));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::splat(4.);
+            for (m, icon, kid, exp) in [
+                (seleccion::Alinear::Izquierda, ic::ALIGN_LEFT, "Izquierda", "Izquierda"),
+                (seleccion::Alinear::CentroH, ic::ALIGN_CENTER_H, "Centro", "Centro H"),
+                (seleccion::Alinear::Derecha, ic::ALIGN_RIGHT, "Derecha", "Derecha"),
+                (seleccion::Alinear::Arriba, ic::ALIGN_TOP, "Arriba", "Arriba"),
+                (seleccion::Alinear::CentroV, ic::ALIGN_CENTER_V, "Medio", "Centro V"),
+                (seleccion::Alinear::Abajo, ic::ALIGN_BOTTOM, "Abajo", "Abajo"),
+            ] {
+                if herr_btn(ui, false, icon, if f { kid } else { exp }, "Alinear las elegidas", Vec2::new(62., 50.)).clicked() {
+                    self.alinear(Some(m), None);
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::splat(4.);
+            let ok = v.len() >= 3;
+            ui.add_enabled_ui(ok, |ui| {
+                if herr_btn(ui, false, ic::DISTRIBUTE_H, if f { "Parejo ancho" } else { "Distribuir H" }, "Mismo espacio entre ellas, a lo ancho (3 o más)", Vec2::new(94., 50.)).clicked() {
+                    self.alinear(None, Some(true));
+                }
+                if herr_btn(ui, false, ic::DISTRIBUTE_V, if f { "Parejo alto" } else { "Distribuir V" }, "Mismo espacio entre ellas, a lo alto (3 o más)", Vec2::new(94., 50.)).clicked() {
+                    self.alinear(None, Some(false));
+                }
+            });
+        });
+        ui.add_space(6.);
+        let layers: Vec<String> = self.p.scenes[sc].layers.iter().map(|l| l.name.clone()).collect();
+        let s = &self.p.scenes[sc];
+        let mut capa = s.instances[v[0]].layer.clone();
+        let misma = v.iter().all(|&i| s.instances[i].layer == capa);
+        let mut z = s.instances[v[0]].z;
+        grid("varias").show(ui, |ui| {
+            lbl(ui, "Capa");
+            if !misma {
+                capa = "(varias)".into();
+            }
+            let mut opts = layers.clone();
+            if !misma {
+                opts.insert(0, "(varias)".into());
+            }
+            if combo(ui, "capa_varias", &mut capa, &opts, "Base") && capa != "(varias)" {
+                for &i in v {
+                    self.p.scenes[sc].instances[i].layer = capa.clone();
+                }
+            }
+            ui.end_row();
+            lbl(ui, "Z (todas)");
+            if ui.add(DragValue::new(&mut z).speed(0.1)).changed() {
+                for &i in v {
+                    self.p.scenes[sc].instances[i].z = z;
+                }
+            }
+            ui.end_row();
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(it(ic::COPY, "Copiar")).on_hover_text("Ctrl+C").clicked() {
+                let ctx = ui.ctx().clone();
+                self.copiar(&ctx);
+            }
+            if ui.button(it(ic::COPY, "Duplicar")).on_hover_text("Ctrl+D").clicked() {
+                self.duplicate_instance();
+            }
+            if ui.button(danger_it("Eliminar")).on_hover_text("Supr").clicked() {
+                self.delete_instance();
+            }
+        });
+        ui.add_space(6.);
+        ui.separator();
+        ui.add_space(4.);
+    }
+
     fn right(&mut self, ui: &mut Ui) {
         let sc = self.sc;
-        if let Some(i) = self.sel_valid() {
+        let varias = self.seleccion();
+        if varias.len() > 1 {
+            self.right_varias(ui, &varias);
+        } else if let Some(i) = self.sel_valid() {
             let s = &self.p.scenes[sc];
             let layers: Vec<String> = s.layers.iter().map(|l| l.name.clone()).collect();
             let osz = self.p.objects_of(s).find(|o| o.name == s.instances[i].obj).map_or(Vec2::splat(32.), |o| self.obj_size(o));
@@ -1851,21 +2749,62 @@ impl App {
                 self.files_at = Some(std::time::Instant::now());
             }
             let files = self.files.clone();
-            let ts = self.obj_mut(&name).and_then(|o| match &o.kind {
-                Kind::Tilemap { tileset, .. } => Some(tileset.clone()),
-                _ => None,
-            });
-            let ctx = ui.ctx().clone();
-            let tex = ts.and_then(|t| self.texture(&ctx, &t));
-            let mut act = None;
+            // Imágenes y fuentes de este objeto (y las variantes para mostrar el efecto).
+            let (mut imgs, mut font, mut fx) = (vec![], String::new(), false);
             if let Some(o) = self.obj_mut(&name) {
-                act = obj_props(ui, o, &base, &mut nb, usos.as_ref(), &files, tex.as_ref());
+                fx = !o.effect.is_empty();
+                match &o.kind {
+                    Kind::Tilemap { tileset, .. } => imgs.push(tileset.clone()),
+                    Kind::Sprite { animations, .. } => imgs.extend(animations.first().and_then(|a| a.frames.first()).cloned()),
+                    Kind::Background { image, .. } => imgs.push(image.clone()),
+                    Kind::Particles(d) => imgs.push(d.image.clone()),
+                    Kind::Text { font: f, .. } => font = f.clone(),
+                    _ => {}
+                }
             }
+            let ctx = ui.ctx().clone();
+            self.fuente(&ctx, &font);
+            let mut tex: HashMap<String, egui::TextureHandle> = HashMap::new();
+            for f in imgs.iter().filter(|f| !f.is_empty()) {
+                if let Some(t) = self.texture(&ctx, f) {
+                    tex.insert(f.clone(), t);
+                }
+                if fx {
+                    for (k, var) in [("gris", 1), ("blanco", 2)] {
+                        if let Some(t) = self.tex_var(&ctx, f, var) {
+                            tex.insert(format!("{k}:{f}"), t);
+                        }
+                    }
+                }
+            }
+            let mut sim = self.psim.remove(&name).unwrap_or_default();
+            let mut ost = std::mem::take(&mut self.origen_st);
+            let abrir_origen = std::mem::take(&mut self.abrir_origen);
+            let mut act = None;
+            let (facil, dt, t, pantalla) = (self.facil, self.dt, self.t as f32, Vec2::new(self.p.width, self.p.height));
+            if let Some(o) = self.obj_mut(&name) {
+                let mut cx = PropCx {
+                    base: &base, files: &files, tex: &tex, usos: usos.as_ref(), facil, dt, t, sim: &mut sim, origen: &mut ost, pantalla, abrir_origen,
+                };
+                act = obj_props(ui, o, &mut nb, &mut cx);
+            }
+            self.origen_st = ost;
+            self.psim.insert(name.clone(), sim);
             self.nb[3] = nb;
             match act {
                 Some(PropAct::Dibujar(a)) => self.abrir_dibujo(dibujo::Destino::Anim { obj: name.clone(), anim: a }),
                 Some(PropAct::DibujarBaldosas) => self.abrir_dibujo(dibujo::Destino::Baldosas { obj: name.clone() }),
                 Some(PropAct::CrearBaldosas) => self.usar_baldosas_ejemplo(&name),
+                Some(PropAct::Importar(tipo, campo)) => {
+                    if let Some(r) = self.elegir_importar(tipo) {
+                        match (self.obj_mut(&name).map(|o| &mut o.kind), campo) {
+                            (Some(Kind::Background { image, .. }), Campo::Fondo) => *image = r,
+                            (Some(Kind::Particles(d)), Campo::Particulas) => d.image = r,
+                            (Some(Kind::Text { font, .. }), Campo::Fuente) => *font = r,
+                            _ => {}
+                        }
+                    }
+                }
                 None => {}
             }
             ui.add_space(6.);
@@ -1878,6 +2817,7 @@ impl App {
                     s.groups.values_mut().for_each(|g| g.retain(|o| *o != name));
                 }
                 (self.sel_obj, self.sel_inst) = (None, None);
+                self.sel_mas.clear();
                 self.say(Nivel::Info, format!("Eliminado «{name}» y sus instancias · {UNDO_HINT}"));
             }
         } else if self.sel_inst.is_none() {
@@ -1893,7 +2833,7 @@ impl App {
 
     /// Instancia seleccionada que es un mapa de baldosas, con el nombre del objeto.
     fn mapa_sel(&self) -> Option<(usize, String)> {
-        let i = self.sel_valid()?;
+        let i = self.sel_valid().filter(|_| self.seleccion().len() <= 1)?;
         let s = &self.p.scenes[self.sc];
         let o = self.p.objects_of(s).find(|o| o.name == s.instances[i].obj)?;
         matches!(o.kind, Kind::Tilemap { .. }).then(|| (i, o.name.clone()))
@@ -1954,7 +2894,7 @@ impl App {
             *p = pass;
         }
         if listo {
-            self.sel_inst = None;
+            self.elegir(None);
         }
     }
 
@@ -2083,7 +3023,34 @@ impl App {
                 if ui.button(it(ic::FIT, "Ajustar vista")).clicked() {
                     self.fit = true;
                 }
-                let hint = if pintando.is_some() { "Rueda: zoom. Botón del medio: mover la vista" } else { "Rueda: zoom. Botón derecho: mover la vista" };
+                let n_sel = self.seleccion().len();
+                if n_sel >= 2 && pintando.is_none() {
+                    let f = self.facil;
+                    seg(ui, |ui| {
+                        for (m, icon, kid, exp) in [
+                            (seleccion::Alinear::Izquierda, ic::ALIGN_LEFT, "Juntar a la izquierda", "Alinear a la izquierda"),
+                            (seleccion::Alinear::CentroH, ic::ALIGN_CENTER_H, "Centrar de costado", "Centrar horizontalmente"),
+                            (seleccion::Alinear::Derecha, ic::ALIGN_RIGHT, "Juntar a la derecha", "Alinear a la derecha"),
+                            (seleccion::Alinear::Arriba, ic::ALIGN_TOP, "Juntar arriba", "Alinear arriba"),
+                            (seleccion::Alinear::CentroV, ic::ALIGN_CENTER_V, "Centrar de alto", "Centrar verticalmente"),
+                            (seleccion::Alinear::Abajo, ic::ALIGN_BOTTOM, "Juntar abajo", "Alinear abajo"),
+                        ] {
+                            if seg_btn(ui, false, RichText::new(icon).size(16.)).on_hover_text(if f { kid } else { exp }).clicked() {
+                                self.alinear(Some(m), None);
+                            }
+                        }
+                    });
+                    seg(ui, |ui| {
+                        let ok = n_sel >= 3;
+                        for (h, icon, kid, exp) in [(true, ic::DISTRIBUTE_H, "Separar parejo a lo ancho", "Distribuir horizontalmente"), (false, ic::DISTRIBUTE_V, "Separar parejo a lo alto", "Distribuir verticalmente")] {
+                            let tip = if ok { if f { kid } else { exp } } else { "Elige 3 o más" };
+                            if ui.add_enabled(ok, Button::selectable(false, RichText::new(icon).size(16.)).frame_when_inactive(false)).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+                                self.alinear(None, Some(h));
+                            }
+                        }
+                    });
+                }
+                let hint = if pintando.is_some() { "Rueda: zoom. Botón del medio: mover la vista" } else { "Rueda: zoom · Botón derecho: mover la vista · Shift+clic o rectángulo: elegir varias" };
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add(egui::Label::new(RichText::new(hint).small().color(TEXT_MUTED)).truncate());
                 });
@@ -2114,17 +3081,32 @@ impl App {
         let to_w = |p: Pos2| ((p - org) / z).to_pos2();
         self.cursor_w = resp.hover_pos().map(to_w);
 
-        // Precarga de imágenes y lista de dibujo ordenada por capa y z.
+        // Precarga de imágenes y fuentes, y lista de dibujo ordenada por capa y z.
         let s = &self.p.scenes[self.sc];
-        let frames: Vec<String> = self.p.objects_of(s)
-            .filter_map(|o| match &o.kind {
-                Kind::Sprite { animations, .. } => animations.first().and_then(|a| a.frames.first()).cloned(),
-                Kind::Tilemap { tileset, .. } if !tileset.is_empty() => Some(tileset.clone()),
-                _ => None,
-            })
-            .collect();
+        let (mut frames, mut fonts, mut fx_imgs) = (vec![], vec![], vec![]);
+        for o in self.p.objects_of(s) {
+            match &o.kind {
+                Kind::Sprite { animations, .. } => {
+                    let f = animations.first().and_then(|a| a.frames.first()).cloned();
+                    if !o.effect.is_empty() {
+                        fx_imgs.extend(f.clone());
+                    }
+                    frames.extend(f);
+                }
+                Kind::Tilemap { tileset, .. } if !tileset.is_empty() => frames.push(tileset.clone()),
+                Kind::Background { image, .. } if !image.is_empty() => frames.push(image.clone()),
+                Kind::Particles(d) if !d.image.is_empty() => frames.push(d.image.clone()),
+                Kind::Text { font, .. } if !font.is_empty() => fonts.push(font.clone()),
+                _ => {}
+            }
+        }
         let ctx = ui.ctx().clone();
         frames.iter().for_each(|f| drop(self.texture(&ctx, f)));
+        fonts.iter().for_each(|f| self.fuente(&ctx, f));
+        let variantes: HashMap<String, (Option<egui::TextureHandle>, Option<egui::TextureHandle>)> =
+            fx_imgs.iter().map(|f| (f.clone(), (self.tex_var(&ctx, f, 1), self.tex_var(&ctx, f, 2)))).collect();
+        let n_ins = self.p.scenes[self.sc].instances.len();
+        let geos: Vec<Option<seleccion::Geo>> = (0..n_ins).map(|i| self.geo(i)).collect();
         let s = &self.p.scenes[self.sc];
         let lidx = |n: &str| s.layers.iter().position(|l| l.name == n);
         let mut order: Vec<usize> = (0..s.instances.len()).filter(|&i| lidx(&s.instances[i].layer).is_none_or(|k| s.layers[k].visible)).collect();
@@ -2151,21 +3133,38 @@ impl App {
             }
         }
         painter.rect_stroke(game, 0., Stroke::new(1., BORDER_STRONG), egui::StrokeKind::Outside);
-        let mut items: Vec<(usize, Rect)> = vec![];
+        let mut items: Vec<(usize, seleccion::Geo, bool)> = vec![];
+        let t_anim = self.t as f32;
         for &i in &order {
             let ins = &s.instances[i];
-            let pos = Vec2::new(ins.x, ins.y);
+            let Some(g) = geos[i] else { continue };
+            let qs = g.quad().map(to_s);
+            let sr = Rect::from_min_max(to_s(g.aabb().min.to_vec2()), to_s(g.aabb().max.to_vec2()));
             let Some(o) = self.p.objects_of(s).find(|o| o.name == ins.obj) else {
-                let wr = Rect::from_min_size(pos.to_pos2(), Vec2::splat(32.));
-                painter.rect_stroke(Rect::from_min_max(to_s(pos), to_s(pos + wr.size())), 0., (2., DANGER), egui::StrokeKind::Inside);
-                items.push((i, wr));
+                painter.add(egui::Shape::closed_line(qs.to_vec(), Stroke::new(2., DANGER)));
+                items.push((i, g, false));
                 continue;
             };
-            let sz = self.obj_size(o);
-            let sz = Vec2::new(ins.w.unwrap_or(sz.x), ins.h.unwrap_or(sz.y));
-            let sr = Rect::from_min_max(to_s(pos), to_s(pos + sz));
+            let fx = o.effect.as_str();
             match &o.kind {
-                Kind::Background { .. } | Kind::Particles(_) => drop(painter.rect_stroke(sr, 2., (1., TEXT_FAINT), egui::StrokeKind::Inside)), // ponytail: dibujo real pendiente
+                Kind::Background { image, .. } => match self.tex.get(image).cloned().flatten() {
+                    Some(t) => {
+                        vista::mosaico(&painter, sr, &t, t.size_vec2() * z, Vec2::ZERO, Color32::WHITE);
+                        painter.rect_stroke(sr, 0., Stroke::new(1., Color32::from_white_alpha(30)), egui::StrokeKind::Inside);
+                    }
+                    None => {
+                        painter.rect_filled(sr, 0., SURFACE_HOVER);
+                        painter.text(sr.center(), Align2::CENTER_CENTER, format!("{}  Fondo sin imagen", ic::MOUNTAINS), egui::FontId::proportional(14.), TEXT_MUTED);
+                    }
+                },
+                Kind::Particles(d) => {
+                    let c = to_s(g.pos);
+                    let tex = self.tex.get(&d.image).cloned().flatten();
+                    match self.psim.get(&o.name).filter(|_| self.sel_obj.as_deref() == Some(o.name.as_str())) {
+                        Some(sim) => sim.dibujar(&painter, c, z, d, tex.as_ref()),
+                        None => particulas::icono_emisor(&painter, c, z),
+                    }
+                }
                 // Vista desde arriba de los objetos 3D (el visor 3D llega en la etapa F7).
                 Kind::Mesh { color: [r, g, b], .. } => {
                     painter.rect_filled(sr, 3., Color32::from_rgb(*r, *g, *b));
@@ -2173,17 +3172,32 @@ impl App {
                 }
                 Kind::Light { color: [r, g, b], .. } => drop(painter.text(sr.center(), Align2::CENTER_CENTER, ic::LIGHTBULB, egui::FontId::proportional(22. * z), Color32::from_rgb(*r, *g, *b))),
                 Kind::Camera3d { .. } => drop(painter.text(sr.center(), Align2::CENTER_CENTER, ic::CAMERA, egui::FontId::proportional(22. * z), TEXT_SOFT)),
-                Kind::Box { color: [r, g, b], .. } => drop(painter.rect_filled(sr, 0., Color32::from_rgb(*r, *g, *b))),
-                Kind::Text { text, size, color: [r, g, b], .. } => {
-                    painter.text(sr.min, Align2::LEFT_TOP, text, egui::FontId::proportional(size * z), Color32::from_rgb(*r, *g, *b));
+                Kind::Box { color, .. } => {
+                    let [r, g, b] = vista::color_fx(*color, fx, 1.);
+                    painter.add(egui::Shape::convex_polygon(qs.to_vec(), Color32::from_rgb(r, g, b), Stroke::NONE));
+                    if fx == "outline" {
+                        painter.add(egui::Shape::closed_line(qs.to_vec(), Stroke::new(2., Color32::WHITE)));
+                    }
+                }
+                Kind::Text { text, size, color, font, align, wrap } => {
+                    let [r, gg, b] = vista::color_fx(*color, fx, 1.);
+                    let c = Color32::from_rgb(r, gg, b);
+                    let (gal, dx) = vista::texto(&painter, text.clone(), size * z, c, vista::familia(&self.fuentes, font), align, wrap * z);
+                    let at = qs[0] + seleccion::rot(Vec2::new(dx, 0.), g.angle);
+                    let ts = egui::epaint::TextShape::new(at, gal, c);
+                    painter.add(if g.angle != 0. { ts.with_angle(g.angle.to_radians()) } else { ts });
                 }
                 Kind::Sprite { animations, .. } => {
-                    match animations.first().and_then(|a| a.frames.first()).and_then(|f| self.tex.get(f).cloned().flatten()) {
-                        Some(t) => drop(painter.image(t.id(), sr, Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)), Color32::WHITE)),
+                    let f = animations.first().and_then(|a| a.frames.first());
+                    match f.and_then(|f| self.tex.get(f).cloned().flatten()) {
+                        Some(t) => {
+                            let (gris, blanco) = f.and_then(|f| variantes.get(f).cloned()).unwrap_or((None, None));
+                            let tx = vista::Texs { n: &t, gris: gris.as_ref(), blanco: blanco.as_ref() };
+                            vista::sprite_fx(&painter, qs, false, &tx, Color32::WHITE, fx, 1., t_anim);
+                        }
                         None => {
                             // Sin imagen: marcador neutro con ícono.
-                            painter.rect_filled(sr, 0., SURFACE_HOVER);
-                            painter.rect_stroke(sr, 0., Stroke::new(1., BORDER_STRONG), egui::StrokeKind::Inside);
+                            painter.add(egui::Shape::convex_polygon(qs.to_vec(), SURFACE_HOVER, Stroke::new(1., BORDER_STRONG)));
                             painter.text(sr.center(), Align2::CENTER_CENTER, ic::IMAGE, egui::FontId::proportional((sr.height() * 0.5).clamp(8., 32.)), TEXT_FAINT);
                         }
                     }
@@ -2191,33 +3205,76 @@ impl App {
                 Kind::Tilemap { tileset, tile, cols, rows, data, .. } => {
                     let tex = self.tex.get(tileset).cloned().flatten();
                     let (c, r) = ((*cols).max(1), (*rows).max(1));
-                    mapa::dibujar(&painter, sr.min, Vec2::new(sr.width() / c as f32, sr.height() / r as f32), *cols, *rows, data, *tile, tex.as_ref());
+                    let mr = Rect::from_min_size(to_s(g.pos), g.size * z);
+                    mapa::dibujar(&painter, mr.min, Vec2::new(mr.width() / c as f32, mr.height() / r as f32), *cols, *rows, data, *tile, tex.as_ref());
                     if data.iter().all(|v| *v < 0) {
-                        painter.rect_stroke(sr, 0., Stroke::new(1., BORDER_STRONG), egui::StrokeKind::Inside);
-                        painter.text(sr.center(), Align2::CENTER_CENTER, format!("{}  Mapa vacío: selecciónalo y píntalo", ic::MAP), egui::FontId::proportional(14.), TEXT_MUTED);
+                        painter.rect_stroke(mr, 0., Stroke::new(1., BORDER_STRONG), egui::StrokeKind::Inside);
+                        painter.text(mr.center(), Align2::CENTER_CENTER, format!("{}  Mapa vacío: selecciónalo y píntalo", ic::MAP), egui::FontId::proportional(14.), TEXT_MUTED);
                     }
                 }
             }
-            items.push((i, Rect::from_min_size(pos.to_pos2(), sz)));
+            // Mapas y fondos suelen cubrir toda la escena: se marcan para no taparle el clic a lo demás.
+            items.push((i, g, matches!(o.kind, Kind::Tilemap { .. } | Kind::Background { .. })));
         }
         if s.instances.is_empty() {
             let t = if self.p.objects_of(s).next().is_some() { "Arrastra un objeto desde la lista para colocarlo" } else { "Crea un objeto en el panel izquierdo para empezar" };
             painter.text(game.center(), Align2::CENTER_CENTER, t, egui::FontId::proportional(14.), TEXT_MUTED);
         }
-        let hit = |p: Pos2| items.iter().rev().find(|(_, wr)| wr.contains(p)).map(|x| x.0);
-        let srect = |wr: &Rect| Rect::from_min_max(to_s(wr.min.to_vec2()), to_s(wr.max.to_vec2()));
+        // Los mapas solo se eligen con un clic si no hay otra cosa debajo.
+        let hit = |p: Pos2| {
+            let v = p.to_vec2();
+            items.iter().rev().find(|(_, g, m)| !m && g.contiene(v)).or_else(|| items.iter().rev().find(|(_, g, _)| g.contiene(v))).map(|x| x.0)
+        };
+        let quad_s = |g: &seleccion::Geo| g.quad().map(to_s).to_vec();
         self.hover_inst = self.cursor_w.and_then(hit);
-        if let Some((_, wr)) = items.iter().find(|x| Some(x.0) == self.hover_inst && self.hover_inst != self.sel_inst) {
-            painter.rect_stroke(srect(wr), 0., Stroke::new(1., BORDER_STRONG), egui::StrokeKind::Outside);
+        let sel = self.seleccion();
+        if let Some((_, g, _)) = items.iter().find(|x| Some(x.0) == self.hover_inst && !sel.contains(&x.0)) {
+            painter.add(egui::Shape::closed_line(quad_s(g), Stroke::new(1., BORDER_STRONG)));
         }
-        if let Some((_, wr)) = items.iter().find(|x| Some(x.0) == self.sel_inst) {
-            let sr = srect(wr).expand(1.);
-            painter.rect_stroke(sr, 0., Stroke::new(1.5, ACCENT), egui::StrokeKind::Outside);
-            for c in [sr.left_top(), sr.right_top(), sr.left_bottom(), sr.right_bottom()] {
-                let h = Rect::from_center_size(c, Vec2::splat(6.));
+        for (_, g, _) in items.iter().filter(|x| sel.contains(&x.0)) {
+            painter.add(egui::Shape::closed_line(quad_s(g), Stroke::new(1.5, ACCENT)));
+        }
+        // Manijas: esquinas para escalar y un círculo arriba para girar.
+        let sel_geos: Vec<(usize, seleccion::Geo)> = sel.iter().filter_map(|&i| geos.get(i).copied().flatten().map(|g| (i, g))).collect();
+        let caja_sel = seleccion::union(&sel_geos.iter().map(|(_, g)| g.aabb()).collect::<Vec<_>>());
+        let manijas: Option<([Pos2; 4], Pos2, Pos2)> = match (sel_geos.as_slice(), caja_sel) {
+            _ if pintando.is_some() => None,
+            ([(_, g)], _) => {
+                let q = g.quad().map(to_s);
+                let arriba = ((q[0] - q[3]).normalized()) * 24.;
+                let mid = q[0] + (q[1] - q[0]) / 2.;
+                Some((q, mid, mid + arriba))
+            }
+            (_, Some(c)) if sel_geos.len() > 1 => {
+                let c = seleccion::a_pantalla(c, org, z).expand(4.);
+                let q = [c.left_top(), c.right_top(), c.right_bottom(), c.left_bottom()];
+                painter.rect_stroke(c, 2., Stroke::new(1., ACCENT.gamma_multiply(0.6)), egui::StrokeKind::Middle);
+                Some((q, c.center_top(), c.center_top() - Vec2::new(0., 24.)))
+            }
+            _ => None,
+        };
+        if let Some((q, mid, knob)) = manijas {
+            painter.line_segment([mid, knob], Stroke::new(1.5, ACCENT));
+            painter.circle_filled(knob, 6., ACCENT);
+            painter.circle_stroke(knob, 6., Stroke::new(1.5, BG));
+            for c in q {
+                let h = Rect::from_center_size(c, Vec2::splat(8.));
                 painter.rect_filled(h, 1, ACCENT);
                 painter.rect_stroke(h, 1, Stroke::new(1., BG), egui::StrokeKind::Outside);
             }
+        }
+        // ¿Qué manija hay bajo el puntero? (0..4 esquinas, 4 = girar)
+        let manija_en = |p: Pos2| -> Option<usize> {
+            let (q, _, knob) = manijas?;
+            if (p - knob).length() <= 9. {
+                return Some(4);
+            }
+            q.iter().position(|c| (p - *c).length() <= 8.)
+        };
+        if let Some(Arrastre::Caja { desde, hasta, .. }) = &self.arrastre {
+            let rr = Rect::from_two_pos(to_s(*desde), to_s(*hasta));
+            painter.rect_filled(rr, 0., ACCENT.gamma_multiply(0.08));
+            painter.rect_stroke(rr, 0., Stroke::new(1., ACCENT), egui::StrokeKind::Middle);
         }
 
         // Interacción
@@ -2229,42 +3286,122 @@ impl App {
             return;
         }
         let sc = self.sc;
+        let shift = ui.input(|i| i.modifiers.shift);
         if resp.drag_started_by(PointerButton::Primary) {
-            if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_w) {
-                self.sel_inst = hit(p);
-                if let Some(i) = self.sel_inst {
-                    let ins = &self.p.scenes[sc].instances[i];
-                    self.drag_off = Some(Vec2::new(ins.x, ins.y) - p.to_vec2());
-                    self.sel_obj = Some(ins.obj.clone());
-                }
+            if let Some(ps) = ui.input(|i| i.pointer.press_origin()) {
+                let pw_ = to_w(ps).to_vec2();
+                self.arrastre = match manija_en(ps) {
+                    Some(4) => {
+                        let centro = match sel_geos.as_slice() {
+                            [(_, g)] => g.pivot(),
+                            _ => caja_sel.map_or(pw_, |c| c.center().to_vec2()),
+                        };
+                        let d = pw_ - centro;
+                        Some(Arrastre::Girar { centro, a0: d.y.atan2(d.x).to_degrees(), ini: sel_geos.clone() })
+                    }
+                    Some(k) => caja_sel.map(|c| Arrastre::Escalar { esq: k, ini: sel_geos.clone(), caja: c }),
+                    // Arrastrar sobre un mapa o fondo que no está elegido dibuja el rectángulo de selección.
+                    None => match hit(to_w(ps)).filter(|i| sel.contains(i) || !items.iter().any(|x| x.0 == *i && x.2)) {
+                        Some(i) => {
+                            if shift && !sel.contains(&i) {
+                                self.alternar(i);
+                            } else if !sel.contains(&i) {
+                                self.elegir(Some(i));
+                            } else {
+                                self.sel_inst = Some(i);
+                                self.sel_obj = Some(self.p.scenes[sc].instances[i].obj.clone());
+                            }
+                            let v = self.seleccion();
+                            let ini = v.iter().map(|&k| (k, Vec2::new(self.p.scenes[sc].instances[k].x, self.p.scenes[sc].instances[k].y))).collect();
+                            Some(Arrastre::Mover { ini, desde: pw_ })
+                        }
+                        None => Some(Arrastre::Caja { desde: pw_, hasta: pw_, sumar: shift }),
+                    },
+                };
             }
         }
-        if let (true, Some(i), Some(off), Some(p)) = (resp.dragged_by(PointerButton::Primary), self.sel_inst, self.drag_off, resp.interact_pointer_pos()) {
-            let mut q = to_w(p).to_vec2() + off;
-            if self.snap {
-                q = (q / self.grid).round() * self.grid;
+        if let (true, Some(p)) = (resp.dragged_by(PointerButton::Primary), resp.interact_pointer_pos()) {
+            let pw_ = to_w(p).to_vec2();
+            let (snap, grid) = (self.snap, self.grid);
+            let insts = &mut self.p.scenes[sc].instances;
+            match &mut self.arrastre {
+                Some(Arrastre::Mover { ini, desde }) => {
+                    let mut d = pw_ - *desde;
+                    if let (true, Some((_, base))) = (snap, ini.first()) {
+                        d = ((*base + d) / grid).round() * grid - *base;
+                    }
+                    for (k, p0) in ini.iter() {
+                        if let Some(n) = insts.get_mut(*k) {
+                            (n.x, n.y) = (p0.x + d.x, p0.y + d.y);
+                        }
+                    }
+                }
+                Some(Arrastre::Escalar { esq, ini, caja }) => {
+                    let res: Vec<(usize, Vec2, Vec2)> = if ini.len() == 1 {
+                        let (pos, size) = seleccion::escalar_una(&ini[0].1, *esq, pw_, shift);
+                        vec![(ini[0].0, pos, size)]
+                    } else {
+                        seleccion::escalar_varias(ini, *caja, *esq, pw_, shift)
+                    };
+                    for (k, pos, size) in res {
+                        if let Some(n) = insts.get_mut(k) {
+                            (n.x, n.y) = (pos.x.round(), pos.y.round());
+                            (n.w, n.h) = (Some(size.x.round().max(1.)), Some(size.y.round().max(1.)));
+                        }
+                    }
+                }
+                Some(Arrastre::Girar { centro, a0, ini }) => {
+                    for (k, pos, ang) in seleccion::girar(ini, *centro, *a0, pw_, shift) {
+                        if let Some(n) = insts.get_mut(k) {
+                            (n.x, n.y, n.angle) = (pos.x, pos.y, ang);
+                        }
+                    }
+                }
+                Some(Arrastre::Caja { hasta, .. }) => *hasta = pw_,
+                None => {}
             }
-            let ins = &mut self.p.scenes[sc].instances[i];
-            (ins.x, ins.y) = (q.x, q.y);
         }
         if resp.drag_stopped() {
-            self.drag_off = None;
+            if let Some(Arrastre::Caja { desde, hasta, sumar }) = self.arrastre.take() {
+                let rr = Rect::from_two_pos(desde.to_pos2(), hasta.to_pos2());
+                // Los mapas (que suelen cubrir todo) solo entran si quedan enteros dentro del rectángulo.
+                let dentro = items.iter().filter(|(_, g, m)| if *m { rr.contains_rect(g.aabb()) } else { rr.intersects(g.aabb()) }).map(|x| x.0);
+                let mut v = if sumar { self.seleccion() } else { vec![] };
+                v.extend(dentro);
+                v.sort_unstable();
+                v.dedup();
+                self.poner_seleccion(v);
+            }
+            self.arrastre = None;
         }
-        if resp.hovered() && self.drag_off.is_some() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-        } else if resp.hovered() && self.hover_inst.is_some() && !self.placing {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        if resp.hovered() {
+            let manija = resp.hover_pos().and_then(manija_en);
+            let esq = match &self.arrastre {
+                Some(Arrastre::Escalar { esq, .. }) => Some(*esq),
+                None => manija.filter(|k| *k < 4),
+                _ => None,
+            };
+            let icon = match &self.arrastre {
+                Some(Arrastre::Mover { .. }) => Some(egui::CursorIcon::Grabbing),
+                Some(Arrastre::Girar { .. }) => Some(egui::CursorIcon::Alias),
+                Some(Arrastre::Caja { .. }) => Some(egui::CursorIcon::Crosshair),
+                _ if esq.is_some() => Some(if matches!(esq, Some(0 | 2)) { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw }),
+                None if manija == Some(4) => Some(egui::CursorIcon::Alias),
+                None if self.hover_inst.is_some() && !self.placing => Some(egui::CursorIcon::Grab),
+                _ => None,
+            };
+            if let Some(c) = icon {
+                ui.ctx().set_cursor_icon(c);
+            }
         }
         if resp.clicked() {
             if let Some(p) = resp.interact_pointer_pos().map(to_w) {
                 match self.sel_obj.clone() {
                     Some(o) if self.placing => self.add_instance(o, p),
-                    _ => {
-                        self.sel_inst = hit(p);
-                        if let Some(i) = self.sel_inst {
-                            self.sel_obj = Some(self.p.scenes[sc].instances[i].obj.clone());
-                        }
-                    }
+                    _ => match hit(p) {
+                        Some(i) if shift => self.alternar(i),
+                        h => self.elegir(h),
+                    },
                 }
             }
         }
@@ -2280,6 +3417,10 @@ impl App {
             return self.sheet_kid(ui, t);
         }
         let objs = self.obj_names();
+        if self.jump.as_ref().is_some_and(|j| j.1 < self.t) {
+            self.jump = None;
+        }
+        eventos::set_salto(self.jump.as_ref().map(|j| j.0.clone()));
         let Some(evs) = self.events_mut(t) else { return };
         let mut out = Salida::default();
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -2295,6 +3436,7 @@ impl App {
                 eventos::cabecera(ui);
                 eventos::sheet(ui, evs, &[], &objs, &mut out);
             }
+            eventos::set_salto(None);
             ui.add_space(6.);
             let add = |ui: &mut Ui, evs: &mut Vec<Event>| {
                 if ui.button(it(ic::PLUS, "Evento")).clicked() {
@@ -2686,6 +3828,37 @@ impl App {
         }
     }
 
+    fn ajustes_ui(&mut self, ctx: &egui::Context) {
+        if !self.ajustes {
+            return;
+        }
+        if self.files_at.is_none_or(|t| t.elapsed().as_secs() >= 5) {
+            self.files = buscar_archivos(&self.base_dir());
+            self.files_at = Some(std::time::Instant::now());
+        }
+        let imgs: Vec<String> = self.files.iter().filter(|f| recursos::Tipo::de(f) == Some(recursos::Tipo::Imagen)).cloned().collect();
+        let mut tex = HashMap::new();
+        for f in [self.p.settings.icon.clone(), self.p.settings.loading_image.clone()] {
+            if let Some(t) = self.texture(ctx, &f) {
+                tex.insert(f, t);
+            }
+        }
+        match ajustes::dialogo(ctx, &mut self.p, &imgs, &tex, self.facil) {
+            Some(ajustes::Pedido::Cerrar) => self.ajustes = false,
+            Some(ajustes::Pedido::ElegirIcono) => {
+                if let Some(r) = self.elegir_importar(recursos::Tipo::Imagen) {
+                    self.p.settings.icon = r;
+                }
+            }
+            Some(ajustes::Pedido::ElegirCarga) => {
+                if let Some(r) = self.elegir_importar(recursos::Tipo::Imagen) {
+                    self.p.settings.loading_image = r;
+                }
+            }
+            None => {}
+        }
+    }
+
     fn confirm_ui(&mut self, ctx: &egui::Context) {
         let Some(i) = self.confirm.filter(|i| *i < self.p.scenes.len()) else { return self.confirm = None };
         let s = &self.p.scenes[i];
@@ -2813,7 +3986,12 @@ impl App {
                 ui.label(RichText::new(format!("{:.0} %", self.zoom * 100.)).monospace().color(TEXT_MUTED)).on_hover_text("Zoom");
                 let c = self.cursor_w.map_or("x -    y -".into(), |p| format!("x {:<5.0}y {:<5.0}", p.x, p.y));
                 ui.label(RichText::new(c).monospace().color(TEXT_MUTED)).on_hover_text("Posición del cursor en la escena");
-                let n = self.sel_valid().map_or("Sin selección".into(), |i| format!("1 seleccionada ({})", self.p.scenes[self.sc].instances[i].obj));
+                let v = self.seleccion();
+                let n = match v.len() {
+                    0 => "Sin selección".to_string(),
+                    1 => format!("1 seleccionada ({})", self.p.scenes[self.sc].instances[v[0]].obj),
+                    n => format!("{n} seleccionadas"),
+                };
                 ui.label(muted(n));
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -3049,6 +4227,85 @@ impl App {
         evs.insert(i + 2, Event { kind: EventKind::Else, acts, ..Default::default() });
     }
 
+    /// `--abrir` de las herramientas de estudio 2D (partículas, origen y máscara, ajustes, recursos, selección múltiple, buscar, listas).
+    fn abrir_estudio(&mut self, que: &str) {
+        self.tab = Tab::Escena;
+        let base = self.base_dir();
+        self.files = buscar_archivos(&base);
+        self.files_at = Some(std::time::Instant::now());
+        match que {
+            "particulas" => self.nuevas_particulas(0),
+            "fondo" => {
+                self.nuevo_fondo();
+                let img = self.files.iter().find(|f| recursos::Tipo::de(f) == Some(recursos::Tipo::Imagen)).cloned().unwrap_or_default();
+                if let Some(Kind::Background { image, scroll, .. }) = self.sel_obj.clone().and_then(|n| self.obj_mut(&n)).map(|o| &mut o.kind) {
+                    if image.is_empty() {
+                        *image = img;
+                    }
+                    *scroll = [-30., 0.];
+                }
+            }
+            "origen" | "mascara" => {
+                let s = &self.p.scenes[self.sc];
+                let found = self.p.objects_of(s).find_map(|o| match &o.kind {
+                    Kind::Sprite { animations, .. } => animations.first().and_then(|a| a.frames.first()).map(|f| (o.name.clone(), f.clone())),
+                    _ => None,
+                });
+                let Some((n, f)) = found else { return };
+                let (w, h) = image::image_dimensions(base.join(&f)).map(|(w, h)| (w as f32, h as f32)).unwrap_or((32., 32.));
+                if let Some(Kind::Sprite { origin, mask, .. }) = self.obj_mut(&n).map(|o| &mut o.kind) {
+                    *origin = Some([(w / 2.).round(), h]);
+                    if que == "mascara" {
+                        *mask = vec![[w * 0.25, h * 0.1], [w * 0.75, h * 0.1], [w * 0.95, h * 0.55], [w * 0.7, h], [w * 0.3, h], [w * 0.05, h * 0.55]].iter().map(|p| [p[0].round(), p[1].round()]).collect();
+                    }
+                }
+                let i = self.p.scenes[self.sc].instances.iter().position(|i| i.obj == n);
+                self.elegir(i);
+                self.sel_obj = Some(n);
+                self.abrir_origen = true;
+                self.origen_st.modo = if que == "mascara" { origen::Modo::Mascara } else { origen::Modo::Origen };
+            }
+            "ajustes" => self.ajustes = true,
+            "recursos" => {
+                self.tab = Tab::Recursos;
+                self.explorador.sel = self.files.iter().find(|f| recursos::Tipo::de(f) == Some(recursos::Tipo::Imagen)).cloned();
+            }
+            "multi" => {
+                let s = &self.p.scenes[self.sc];
+                let v: Vec<usize> = (0..s.instances.len())
+                    .filter(|&i| s.layers.iter().find(|l| l.name == s.instances[i].layer).is_none_or(|l| l.visible))
+                    .filter(|&i| self.p.objects_of(s).find(|o| o.name == s.instances[i].obj).is_some_and(|o| matches!(o.kind, Kind::Sprite { .. })))
+                    .take(4)
+                    .collect();
+                self.poner_seleccion(v);
+            }
+            "buscar" => {
+                self.tab = Tab::Eventos;
+                let q = self.p.objects_of(&self.p.scenes[self.sc]).map(|o| o.name.clone()).find(|n| !buscar::buscar(&self.p, self.sc, n, false, false).is_empty()).unwrap_or_default();
+                self.buscador.abrir();
+                self.buscador.texto = q.clone();
+                self.buscador.reemplazo = format!("{q}2");
+                let json = self.json();
+                self.buscador.actualizar(&self.p, self.sc, &json, self.facil);
+                if let Some(h) = self.buscador.resultados.get(1).cloned() {
+                    self.buscador.ir(1);
+                    self.ir_a(&h);
+                    self.jump = Some((h.ev, 1e9));
+                }
+            }
+            "lista" => {
+                self.tab = Tab::Variables;
+                let vars = &mut self.p.scenes[self.sc].vars;
+                let inv = serde_json::from_str(r#"["espada", "escudo", 3, true, [1, 2]]"#).unwrap();
+                vars.entry("inventario".into()).or_insert(inv);
+                let jug = serde_json::from_str(r#"{"nombre": "Nico", "vidas": 3, "llaves": ["roja", "azul"]}"#).unwrap();
+                vars.entry("jugador".into()).or_insert(jug);
+                cajitas::ABRIR_LISTAS.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+
     /// Vista inicial pedida con `--abrir` (para probar la interfaz).
     fn abrir(&mut self, que: &str) {
         match que {
@@ -3119,11 +4376,12 @@ impl App {
                 self.tab = Tab::Escena;
                 self.nuevo_mapa();
             }
-            "vista" | "vista-pausa" | "vista-abajo" | "depurador" | "registro" | "rendimiento" | "recarga" | "jugar" => {
+            "vista" | "vista-pausa" | "vista-abajo" | "depurador" | "registro" | "rendimiento" | "recarga" | "jugar" | "perfilador" => {
                 self.tab = Tab::Escena;
                 self.vista_abrir = Some(que.into());
             }
             "si-no" => self.abrir_si_no(),
+            "particulas" | "fondo" | "origen" | "mascara" | "ajustes" | "recursos" | "multi" | "buscar" | "lista" => self.abrir_estudio(que),
             q if q.starts_with("nodos") => self.abrir_nodos(q),
             _ => {}
         }
@@ -3146,12 +4404,9 @@ impl App {
                 self.say(Nivel::Ok, "Juego nuevo y vacío. ¡A inventar!");
             }
             Some(inicio::Accion::Abrir) => self.open_file(),
-            Some(inicio::Accion::Reciente(f)) => match load(&f) {
-                Ok(p) => self.set_project(p, Some(f)),
-                Err(e) => self.say(Nivel::Error, format!("No se pudo abrir {}: {e}", f.display())),
-            },
-            Some(inicio::Accion::Creado(f)) => match load(&f) {
-                Ok(p) => {
+            Some(inicio::Accion::Reciente(f)) => drop(abrir_proyecto(self, f)),
+            Some(inicio::Accion::Creado(f)) => match ajustes::cargar(&f) {
+                Ok((p, _)) => {
                     let name = p.name.clone();
                     self.set_project(p, Some(f.clone()));
                     if !self.facil {
@@ -3189,9 +4444,23 @@ impl App {
         let json = self.json();
         let mut p = self.p.clone();
         let mut tex = HashMap::new();
+        // Con efectos (en un objeto o cambiados por eventos), también la versión gris y la silueta de cada imagen.
+        let efectos = json.contains("\"effect\"") || json.contains("set_effect");
         for f in vista::imagenes(&p) {
             if let Some(t) = self.texture(ctx, &f) {
-                tex.insert(f, t);
+                tex.insert(f.clone(), t);
+            }
+            if efectos {
+                for (k, var) in [("gris", 1), ("blanco", 2)] {
+                    if let Some(t) = self.tex_var(ctx, &f, var) {
+                        tex.insert(format!("{k}:{f}"), t);
+                    }
+                }
+            }
+        }
+        for o in p.objects.iter().chain(p.scenes.iter().flat_map(|s| s.objects.iter())) {
+            if let Kind::Text { font, .. } = &o.kind {
+                self.fuente(ctx, font);
             }
         }
         vista::preparar(&mut p, |f| tex.get(f).map(|t| t.size()));
@@ -3379,9 +4648,9 @@ impl App {
         let Some(s) = self.vista.as_mut() else { return };
         let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         painter.rect_filled(resp.rect, 0., Color32::BLACK);
-        let (m, quads) = vista::dibujar(&painter, resp.rect.shrink(6.), s);
+        let (m, quads) = vista::dibujar(&painter, resp.rect.shrink(6.), s, &self.fuentes);
         s.marco = Some(m);
-        vista::medir_textos(ui.ctx(), &mut s.world);
+        vista::medir_textos(ui.ctx(), &mut s.world, &self.fuentes);
         // Foco de teclado: clic en el juego. Las flechas, Tab y Esc van al juego y no mueven el foco del editor.
         if std::mem::take(&mut s.pedir_foco) || resp.clicked() || resp.drag_started() {
             resp.request_focus();
@@ -3480,6 +4749,10 @@ impl App {
                 s.pestana = vista::Pestana::Rendimiento;
                 s.ver_todo = true;
             }
+            "perfilador" => {
+                s.pestana = vista::Pestana::Perfil;
+                s.pausa = true;
+            }
             "recarga" => {
                 s.pestana = vista::Pestana::Registro;
                 // Un cambio en el proyecto (fondo rojizo y una moneda más): la recarga en caliente lo aplica al terminar el cuadro.
@@ -3498,29 +4771,9 @@ fn catalog_sentence(i: &Instr) -> String {
     nicostation::catalog::sentence(i)
 }
 
-/// Imágenes y sonidos dentro de la carpeta del proyecto (hasta 3 niveles).
+/// Recursos dentro de la carpeta del proyecto: imágenes, sonidos, fuentes y modelos.
 fn buscar_archivos(base: &Path) -> Vec<String> {
-    fn walk(base: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
-        for e in rd.flatten() {
-            let p = e.path();
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') || out.len() >= 500 {
-                continue;
-            }
-            if p.is_dir() {
-                if depth < 3 && !matches!(name.as_str(), "target" | "web" | "node_modules") {
-                    walk(base, &p, depth + 1, out);
-                }
-            } else if p.extension().and_then(|x| x.to_str()).is_some_and(|x| ["png", "jpg", "jpeg", "wav", "ogg", "mp3"].contains(&x.to_lowercase().as_str())) {
-                out.push(rel(base, &p));
-            }
-        }
-    }
-    let mut out = vec![];
-    walk(base, base, 1, &mut out);
-    out.sort();
-    out
+    recursos::listar(base)
 }
 
 impl eframe::App for App {
@@ -3541,9 +4794,21 @@ impl eframe::App for App {
             ctx.set_zoom_factor(if self.grande { 1.25 } else { 1. });
             self.aplicado = Some((self.facil, self.grande));
         }
-        self.t = ctx.input(|i| i.time);
+        let t_nuevo = ctx.input(|i| i.time);
+        self.dt = ((t_nuevo - self.t) as f32).clamp(0., 0.1);
+        self.t = t_nuevo;
+        // Las fuentes del proyecto pedidas en el cuadro anterior ya están cargadas en egui.
+        self.fuentes.values_mut().filter(|v| **v == 1).for_each(|v| *v = 2);
         if self.inicio.is_some() {
             return self.bienvenida(ui);
+        }
+        // Archivos arrastrados a la ventana: se importan a la carpeta del juego.
+        let soltados: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
+        if !soltados.is_empty() {
+            let r = self.importar_archivos(soltados);
+            if !r.is_empty() && self.tab != Tab::Escena {
+                self.tab = Tab::Recursos;
+            }
         }
 
         if let Some(q) = self.vista_abrir.take() {
@@ -3557,7 +4822,7 @@ impl eframe::App for App {
         // Atajos
         let typing = ctx.egui_wants_keyboard_input();
         let modal = self.ed.is_some() || self.exp.is_some() || self.confirm.is_some() || self.sel.is_some() || self.rec.is_some() || self.asis.is_some()
-            || self.dib.is_some() || self.nuevo.is_some();
+            || self.dib.is_some() || self.nuevo.is_some() || self.ajustes;
         let free = !typing && !modal;
         let scene_keys = free && self.tab == Tab::Escena;
         let (cmd, cs) = (Modifiers::COMMAND, Modifiers::COMMAND | Modifiers::SHIFT);
@@ -3569,7 +4834,25 @@ impl eframe::App for App {
             let dup = scene_keys && i.consume_key(cmd, Key::D);
             let del = scene_keys && i.consume_key(Modifiers::NONE, Key::Delete);
             let esc = scene_keys && i.consume_key(Modifiers::NONE, Key::Escape);
-            for (key, t) in [(Key::Num1, Tab::Escena), (Key::Num2, Tab::Eventos), (Key::Num3, Tab::Funciones), (Key::Num4, Tab::Variables)] {
+            // Copiar y pegar instancias: egui convierte Ctrl+C / Ctrl+V en Copy / Paste.
+            let mut copy = scene_keys && i.consume_key(cmd, Key::C);
+            let mut paste = (scene_keys && i.consume_key(cmd, Key::V)).then(String::new);
+            if scene_keys {
+                i.events.retain(|e| match e {
+                    egui::Event::Copy => {
+                        copy = true;
+                        false
+                    }
+                    egui::Event::Paste(t) => {
+                        paste = Some(t.clone());
+                        false
+                    }
+                    _ => true,
+                });
+            }
+            let todo = scene_keys && i.consume_key(cmd, Key::A);
+            let find = !modal && matches!(self.tab, Tab::Eventos | Tab::Funciones) && i.consume_key(cmd, Key::F);
+            for (key, t) in [(Key::Num1, Tab::Escena), (Key::Num2, Tab::Eventos), (Key::Num3, Tab::Funciones), (Key::Num4, Tab::Variables), (Key::Num5, Tab::Recursos)] {
                 if !modal && i.consume_key(cmd, key) {
                     self.tab = t;
                     self.vprefs.grande &= self.vista.is_none();
@@ -3590,9 +4873,22 @@ impl eframe::App for App {
                     nudge += d * i.count_and_consume_key(Modifiers::NONE, key) as f32;
                 }
             }
-            (save_as, save, i.consume_key(Modifiers::NONE, Key::F5) && !modal, undo, redo, dup, del, esc, nudge, f6, f7)
+            (save_as, save, i.consume_key(Modifiers::NONE, Key::F5) && !modal, undo, redo, dup, del, esc, nudge, f6, f7, (copy, paste, todo, find))
         });
-        let (save_as, save, run, undo, redo, dup, del, esc, nudge, f6, f7) = k;
+        let (save_as, save, run, undo, redo, dup, del, esc, nudge, f6, f7, (copy, paste, todo, find)) = k;
+        if copy {
+            self.copiar(&ctx);
+        }
+        if let Some(t) = paste {
+            self.pegar((!t.is_empty()).then_some(t));
+        }
+        if todo {
+            let n = self.p.scenes[self.sc].instances.len();
+            self.poner_seleccion((0..n).collect());
+        }
+        if find {
+            self.buscador.abrir();
+        }
         if f6 {
             self.vista_f6(&ctx);
         }
@@ -3623,7 +4919,8 @@ impl eframe::App for App {
             self.delete_instance();
         }
         if esc {
-            self.sel_inst = None;
+            self.elegir(None);
+            self.arrastre = None;
         }
         if nudge != Vec2::ZERO {
             self.nudge(nudge);
@@ -3642,7 +4939,7 @@ impl eframe::App for App {
             egui::Panel::right("misiones").exact_size(misiones::ANCHO).frame(side).show(ui, |ui| self.mis.ui(ui, &self.p));
         }
         // En Mis bloques (modo fácil) el panel de la escena no se usa: más lugar para el bloque.
-        if !grande && !(self.facil && self.tab == Tab::Funciones) {
+        if !grande && !(self.facil && self.tab == Tab::Funciones) && self.tab != Tab::Recursos {
             egui::Panel::left("izq").default_size(290.).size_range(240.0..=480.).frame(side)
                 .show(ui, |ui| egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.left(ui)));
         }
@@ -3652,14 +4949,23 @@ impl eframe::App for App {
         }
         let margin = match self.tab {
             _ if grande => Margin::ZERO,
-            Tab::Escena | Tab::Funciones => Margin::ZERO,
+            Tab::Escena | Tab::Funciones | Tab::Recursos => Margin::ZERO,
             _ => Margin::same(12),
         };
         egui::CentralPanel::default_margins().frame(Frame::new().fill(BG).inner_margin(margin)).show(ui, |ui| match self.tab {
             _ if grande => self.vista_ui(ui),
             Tab::Escena => self.canvas(ui),
-            Tab::Eventos => self.eventos_o_nodos(ui, Target::Scene(self.sc)),
-            Tab::Funciones => self.funcs(ui),
+            Tab::Eventos => {
+                self.barra_buscar(ui);
+                self.eventos_o_nodos(ui, Target::Scene(self.sc));
+            }
+            Tab::Recursos => self.recursos_tab(ui),
+            Tab::Funciones => {
+                if self.buscador.abierto {
+                    Frame::new().inner_margin(Margin { left: 12, right: 12, top: 8, bottom: 0 }).show(ui, |ui| self.barra_buscar(ui));
+                }
+                self.funcs(ui);
+            }
             Tab::Variables => self.variables(ui),
         });
 
@@ -3694,6 +5000,15 @@ impl eframe::App for App {
         }
         self.confirm_ui(&ctx);
         self.export_ui(&ctx);
+        self.ajustes_ui(&ctx);
+        // Archivos encima de la ventana: aviso de que se pueden soltar.
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            let r = ctx.content_rect();
+            let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("soltar")));
+            p.rect_filled(r, 0, Color32::from_black_alpha(160));
+            p.rect_stroke(r.shrink(16.), 12, Stroke::new(3., ACCENT), egui::StrokeKind::Inside);
+            p.text(r.center(), Align2::CENTER_CENTER, format!("{}  Suelta los archivos para agregarlos al juego", ic::FILE_IMAGE), egui::FontId::proportional(24.), TEXT);
+        }
 
         // Historial: un paso por interacción terminada (sin botón presionado ni texto con foco).
         let now = self.json();
@@ -3752,10 +5067,9 @@ fn main() -> eframe::Result {
     }
     if let Some(a) = file.as_ref() {
         let path = PathBuf::from(a);
-        match path.exists().then(|| load(&path)) {
-            Some(Ok(p)) => app.set_project(p, Some(path)),
-            Some(Err(e)) => app.say(Nivel::Error, format!("No se pudo abrir {a}: {e}")),
-            None => {
+        match path.exists() {
+            true => drop(abrir_proyecto(&mut app, path)),
+            false => {
                 app.path = Some(path);
                 app.say(Nivel::Info, format!("Proyecto nuevo: {a}"));
             }

@@ -223,7 +223,7 @@ pub struct World {
     pub dim3: bool,
     /// Partículas vivas de todos los emisores.
     pub particles: Vec<Particle>,
-    /// Perfilador: (qué, milisegundos) del último paso — eventos de primer nivel y comportamientos.
+    /// Perfilador: (qué, milisegundos) del último paso: eventos de primer nivel y comportamientos.
     pub profile: Vec<(String, f32)>,
     /// Punto donde pegó el último `raycast` (o el final del rayo si no pegó): expresiones ray_x, ray_y.
     pub ray_hit: (f32, f32),
