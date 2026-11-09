@@ -10,6 +10,9 @@ use std::path::Path;
 /// `base`: carpeta del proyecto, para comprobar que existen imágenes y sonidos (None = no se comprueba).
 pub fn validate(p: &Project, base: Option<&Path>) -> Vec<String> {
     let mut out = vec![];
+    if p.version > FORMAT_VERSION {
+        out.push(format!("el proyecto está hecho con una versión más nueva de NicoStation (formato {}, este programa entiende hasta el {FORMAT_VERSION}): puede que algo no funcione", p.version));
+    }
     if p.scene(&p.first_scene).is_none() {
         out.push(format!("first_scene «{}» no existe", p.first_scene));
     }
@@ -20,6 +23,36 @@ pub fn validate(p: &Project, base: Option<&Path>) -> Vec<String> {
     let file_ok = |f: &str| base.is_none_or(|b| b.join(f).is_file());
     let all_objects: Vec<&ObjectDef> = p.objects.iter().chain(p.scenes.iter().flat_map(|s| s.objects.iter())).collect();
     for o in &all_objects {
+        if !o.effect.is_empty() && !catalog::EFFECTS.contains(&o.effect.as_str()) {
+            out.push(format!("objeto «{}»: efecto desconocido «{}», usa uno de {:?}", o.name, o.effect, catalog::EFFECTS));
+        }
+        for b in &o.behaviors {
+            match b {
+                Behavior::Physics { body, shape, .. } => {
+                    if !["dynamic", "static", "kinematic"].contains(&body.as_str()) {
+                        out.push(format!("objeto «{}»: física con body «{body}»: usa dynamic, static o kinematic", o.name));
+                    }
+                    if !["box", "circle"].contains(&shape.as_str()) {
+                        out.push(format!("objeto «{}»: física con shape «{shape}»: usa box o circle", o.name));
+                    }
+                }
+                Behavior::Pathfinder { cell, .. } if *cell <= 0. => out.push(format!("objeto «{}»: pathfinder necesita cell > 0", o.name)),
+                _ => {}
+            }
+        }
+        if let Kind::Particles(d) = &o.kind {
+            if !d.image.is_empty() && !file_ok(&d.image) {
+                out.push(format!("objeto «{}»: no existe la imagen de partícula «{}»", o.name, d.image));
+            }
+            if d.life[0] > d.life[1] || d.speed[0] > d.speed[1] {
+                out.push(format!("objeto «{}»: en life y speed va [mínimo, máximo]", o.name));
+            }
+        }
+        if let Kind::Sprite { mask, .. } = &o.kind {
+            if !mask.is_empty() && mask.len() < 3 {
+                out.push(format!("objeto «{}»: la máscara necesita al menos 3 puntos", o.name));
+            }
+        }
         if let Kind::Tilemap { tileset, tile, cols, rows, data, .. } = &o.kind {
             if !file_ok(tileset) {
                 out.push(format!("objeto «{}»: no existe la imagen de baldosas «{tileset}»", o.name));
@@ -224,6 +257,9 @@ fn instr(c: &Ctx, i: &Instr, cond: bool, at: &str, out: &mut Vec<String>) {
             P::Mouse if !catalog::MOUSE.contains(&a.as_str()) => out.push(bad("botón desconocido: Left, Right o Middle")),
             P::Layer if !c.layers.is_empty() && !c.layers.contains(&a.as_str()) => out.push(bad("capa desconocida (\"\" = capa base)")),
             P::File if !(c.file_ok)(a) => out.push(bad("el archivo no existe")),
+            P::Text if i.op == "set_effect" && k == 1 && !catalog::EFFECTS.contains(&a.as_str()) => {
+                out.push(bad(&format!("efecto desconocido, usa uno de {:?}", catalog::EFFECTS)))
+            }
             P::Expr => expr(a, &format!("{at} › argumento {}", k + 1), out),
             P::Code => {
                 if let Err(e) = crate::script::check(a) {
@@ -302,5 +338,29 @@ mod tests {
         let probs = super::graph_problems(&p, Some(&p.scenes[0]), &p.scenes[0].graphs[0], None);
         assert_eq!(probs[1].0, Some(2));
         assert!(probs[1].1.starts_with("expresión «1 +»"), "{probs:?}");
+    }
+
+    #[test]
+    fn version_nueva_efectos_y_fisica() {
+        let src = r#"{"name":"t","width":100,"height":100,"first_scene":"S","version":99,"scenes":[{"name":"S",
+            "objects":[{"name":"A","type":"box","w":10,"h":10,"color":[0,0,0],"effect":"brillo",
+                "behaviors":[{"type":"physics","body":"flotante"},{"type":"pathfinder"}]},
+                {"name":"P","type":"particles","life":[2,1]}],
+            "events":[{"conds":[{"op":"key_down","args":["Pad1Start"]}],"acts":[
+                {"op":"set_effect","args":["A","grayscale"]},{"op":"set_effect","args":["A","arcoiris","1"]},
+                {"op":"apply_impulse","args":["A","0","-300"]},{"op":"move_to","args":["A","10","10"]}]}]}]}"#;
+        let p: crate::model::Project = serde_json::from_str(src).unwrap();
+        let errs = super::validate(&p, None);
+        assert_eq!(errs.len(), 5, "{errs:#?}");
+        assert!(errs[0].contains("versión más nueva"), "{errs:#?}");
+        assert!(errs[1].contains("efecto desconocido «brillo»"));
+        assert!(errs[2].contains("body «flotante»"));
+        assert!(errs[3].contains("[mínimo, máximo]"));
+        assert!(errs[4].contains("acción 2") && errs[4].contains("efecto desconocido"), "{errs:#?}");
+        let mut p = crate::model::parse_project(src.as_bytes()).unwrap();
+        assert_eq!(p.version, 99, "migrate no baja la versión de un proyecto más nuevo");
+        p.version = 1;
+        crate::model::migrate(&mut p);
+        assert_eq!(p.version, crate::model::FORMAT_VERSION);
     }
 }

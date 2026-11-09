@@ -243,7 +243,15 @@ fn fit() -> String {
 /// Lleva un proyecto de una versión anterior del formato a la actual.
 pub fn migrate(p: &mut Project) {
     // 1 → 2: aparecen `version` y `settings` (con valores por defecto); nada que convertir.
-    p.version = FORMAT_VERSION;
+    // Un proyecto de una versión más nueva queda como está (el validador avisa).
+    p.version = p.version.max(FORMAT_VERSION);
+}
+
+/// Lee un proyecto JSON y lo lleva al formato actual (`migrate`). Úsalo en vez de `serde_json::from_*` directo.
+pub fn parse_project(src: &[u8]) -> Result<Project, String> {
+    let mut p: Project = serde_json::from_slice(src).map_err(|e| e.to_string())?;
+    migrate(&mut p);
+    Ok(p)
 }
 
 fn yes() -> bool {

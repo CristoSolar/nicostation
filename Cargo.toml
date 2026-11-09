@@ -28,12 +28,45 @@ serde_json = "1"
 # Scripts (código para usuarios avanzados); sin hilos ni tiempo para que compile también a WebAssembly.
 rhai = { version = "1", default-features = false, features = ["std", "only_i64", "no_time", "no_module", "no_custom_syntax"] }
 macroquad = "0.4"
+# Física 2D (comportamiento Physics). Sin features extra: compila también a WebAssembly sin wasm-bindgen.
+rapier2d = "0.36"
 
-# Solo el editor (escritorio); el reproductor también compila a WebAssembly.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Solo el editor (escritorio); el reproductor también compila a WebAssembly y a Android.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 eframe = "0.37"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 rfd = "0.15"
+
+# Reproductor nativo (escritorio y Android) y editor.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Ícono de la ventana (reproductor) e imágenes del editor.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Mandos en el reproductor de escritorio (en web los lee el plugin JS de assets/web; en Android no hay).
+gilrs = "0.11"
+# Sonido del reproductor nativo (el mismo que nicostation3d). No se usa la feature "audio" de macroquad:
+# su ALSA choca con el de kira en el workspace. En web el sonido va por el plugin JS que ya trae mq_js_bundle.js.
+kira = { version = "0.12", default-features = false, features = ["cpal", "wav", "pcm", "ogg", "vorbis", "mp3"] }
+# Exportar a Android: arma el .apk (plantilla + archivos del juego).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Android: cpal (kira) necesita el contexto JNI; el reproductor se lo da a ndk-context al arrancar.
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-context = "0.1"
+
+# APK plantilla del reproductor (ver README, «Exportar a Android»): cargo quad-apk build --release --bin nicostation.
+# El juego no va aquí: `--export-android` le agrega los archivos en assets/ y lo firma.
+[package.metadata.android]
+# El último tramo DEBE ser el nombre del bin: cargo-quad-apk hace System.loadLibrary(<último tramo>).
+package_name = "com.nicostation.nicostation"
+label = "NicoStation"
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
+android_version = 31
+target_sdk_version = 31
+# 26: AAudio (cpal/kira en Android).
+min_sdk_version = 26
+fullscreen = true
+
+[package.metadata.android.activity_attributes]
+"android:screenOrientation" = "sensorLandscape"
 
 [profile.dev.package."*"]
 opt-level = 2

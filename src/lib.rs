@@ -2,6 +2,9 @@
 pub mod catalog;
 pub mod export;
 pub mod expr;
+pub mod fisica2d;
+pub mod caminos;
+pub mod particulas;
 pub mod guardado;
 pub mod misiones;
 pub mod model;

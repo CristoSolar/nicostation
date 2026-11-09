@@ -44,7 +44,7 @@ pub fn crear(carpeta: &str, destino: &Path) -> Result<PathBuf, String> {
     copy_dir(&t.dir, destino)?;
     // Recordar la plantilla de origen (para las misiones), aunque luego cambie el nombre.
     let json = destino.join("juego.json");
-    let mut p: crate::model::Project = serde_json::from_str(&std::fs::read_to_string(&json).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut p = crate::model::parse_project(&std::fs::read(&json).map_err(|e| e.to_string())?)?;
     p.plantilla = carpeta.into();
     std::fs::write(&json, serde_json::to_string_pretty(&p).map_err(|e| e.to_string())? + "\n").map_err(|e| e.to_string())?;
     Ok(json)

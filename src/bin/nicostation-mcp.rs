@@ -935,7 +935,7 @@ fn simulate(path: &Path, a: &J) -> Result<String, String> {
             let k = match c {
                 nicostation::runtime::Cmd::ChannelVolume { channel, volume, .. } => format!("volumen canal {channel} → {volume}"),
                 nicostation::runtime::Cmd::StopChannel { channel } => format!("detener canal {channel}"),
-                nicostation::runtime::Cmd::PlaySound { file, .. } => format!("sonido {file}"),
+                nicostation::runtime::Cmd::PlaySound { file, channel, .. } => if channel.is_empty() { format!("sonido {file}") } else { format!("sonido {file} (canal {channel})") },
                 nicostation::runtime::Cmd::PlayMusic { file, .. } => format!("música {file}"),
                 nicostation::runtime::Cmd::StopMusic => "detener música".into(),
                 nicostation::runtime::Cmd::StopSound { file } => format!("detener {file}"),
@@ -998,15 +998,33 @@ Escena: { "name", "background": [r,g,b], "layers": [{ "name": "", "visible": tru
 Capa "" = base. fixed=true no sigue a la cámara (HUD).
 
 ## Objetos
-- sprite: { "name", "type": "sprite", "w"?, "h"?, "animations": [{ "name", "frames": ["img/a.png", ...], "fps": 10, "looping": true }] }
+- sprite: { "name", "type": "sprite", "w"?, "h"?, "animations": [{ "name", "frames": ["img/a.png", ...], "fps": 10, "looping": true }],
+  "origin"?: [ox, oy], "mask"?: [[x,y], [x,y], [x,y], ...] }
   w/h = 0 o ausentes: tamaño de la primera imagen. La primera animación es la inicial.
-- text: { "name", "type": "text", "text": "Puntos: {puntos}", "size": 24, "color": [r,g,b] }   ({expresión} se actualiza sola)
+  origin: punto de origen en px del tamaño base (p. ej. los pies [16, 32]): x, y de la instancia es ESE punto y gira y escala
+  alrededor de él (sin origin: x, y = esquina superior izquierda y gira alrededor del centro). Expresiones cx, cy = centro.
+  mask: máscara de choque, polígono convexo en px del tamaño base (se escala y gira con la instancia; flip_x la espeja).
+- text: { "name", "type": "text", "text": "Puntos: {puntos}", "size": 24, "color": [r,g,b], "font"?: "fuentes/x.ttf",
+  "align"?: "left|center|right", "wrap"?: ancho_px }   ({expresión} se actualiza sola; wrap > 0 parte en líneas)
+- background: { "name", "type": "background", "image": "img/cielo.png", "w", "h", "scroll"?: [px/s x, px/s y] }
+  imagen que se repite; con capas de paralaje ("parallax": [0.5, 0.5] en la capa) da profundidad.
+- particles: { "name", "type": "particles", "rate": 30, "burst": 0, "max": 300, "life": [0.6, 1.2], "speed": [40, 120],
+  "angle": -90, "spread": 30, "gravity": [0, 0], "color_start", "color_end": [r,g,b], "alpha_start": 255, "alpha_end": 0,
+  "size_start": 8, "size_end": 2, "image"?: "img/chispa.png", "additive"?: true, "auto_destroy"?: true }
+  Emisor: suelta "rate" partículas por segundo desde su centro (y "burst" de golpe al crearse) hacia angle ± spread/2
+  (grados, 0 = derecha, -90 = arriba; se suma el angle de la instancia). Color, opacidad y tamaño van de *_start a *_end.
+  auto_destroy: se borra solo cuando ya no emite (rate 0 o apagado) y no le quedan partículas: ideal para explosiones
+  (crear un emisor con burst 40, rate 0, auto_destroy). Acciones emit_burst(obj, n), set_emitting(obj, 0|1); prop emitting.
 - box: { "name", "type": "box", "w", "h", "color": [r,g,b] }   (rectángulo de color, ideal para prototipos)
 - tilemap: { "name", "type": "tilemap", "tileset": "img/baldosas.png", "tile": 32, "cols", "rows", "data": [índices, -1 = vacía], "pass": [baldosas que no chocan] }
   Mapa de baldosas para armar niveles; con el comportamiento platform sus baldosas son suelo. Píntalo con mapa_pintar.
   El tileset es una imagen con baldosas en grilla (índice 0 arriba a la izquierda, de izquierda a derecha). Expresión tile(Mapa, x, y).
-Todos aceptan "behaviors": [...] y "vars": { "vida": 3 }.
-Instancia: { "obj", "x", "y", "layer"?, "angle"?, "z"?, "w"?, "h"?, "vars"? }  (x,y = esquina superior izquierda; rota alrededor del centro)
+Todos aceptan "behaviors": [...], "vars": { "vida": 3 } y "effect"?: "none|flash|outline|grayscale|wave" (efecto visual;
+se cambia con set_effect(obj, efecto, intensidad 0..1) o las props effect / effect_amount).
+Instancia: { "obj", "x", "y", "layer"?, "angle"?, "z"?, "w"?, "h"?, "vars"? }  (x,y = esquina superior izquierda, o el origin del
+sprite si tiene; rota alrededor del centro o del origin). Escena: "gravity"?: [0, 980] = gravedad de la física 2D en px/s².
+Proyecto: "version" (formato; se migra solo al abrir) y "settings"?: { "scale_mode": "fit|stretch|integer", "pixel_art": true,
+"max_fps": 0, "icon", "loading_image" }.
 
 ## Escenas 3D
 Una escena con "dim3": true es 3D (se juega con el reproductor 3D). Allí x, y, z son la posición del CENTRO en metros,
@@ -1024,7 +1042,7 @@ Bloques 3D: move_forward(obj, metros), move_right(obj, metros), look_at3(obj, x,
 
 ## Comportamientos (con sus valores por defecto)
 "#);
-    for t in ["platformer", "platform", "top_down", "bullet", "rotate", "destroy_outside", "bound_to_layout", "screen_wrap", "draggable"] {
+    for t in ["platformer", "platform", "top_down", "bullet", "rotate", "destroy_outside", "bound_to_layout", "screen_wrap", "draggable", "physics", "pathfinder", "obstacle"] {
         let v = serde_json::from_value::<Behavior>(json!({"type": t}))
             .map(|b| serde_json::to_string(&b).unwrap_or_default())
             .unwrap_or_else(|_| format!("{{\"type\":\"{t}\",\"speed\":<obligatorio>}}"));
@@ -1034,6 +1052,26 @@ Bloques 3D: move_forward(obj, metros), move_right(obj, metros), look_at3(obj, x,
 platform: suelo/pared; rotada = rampa; jumpthru = se atraviesa desde abajo (Down para bajar); ladder = escalera; grabbable = borde agarrable.
 top_down: flechas en 8 direcciones (no choca solo: usa la acción separate contra las paredes).
 bullet: avanza según su ángulo (grados, 0 = derecha, 90 = abajo). destroy_outside: se borra al salir de la cámara.
+
+### Física 2D (physics, con rapier2d; 50 px = 1 metro)
+body: dynamic (cae, rebota y lo empujan), static (piso, paredes; no se mueve solo) o kinematic (lo mueven los eventos con
+set/add x, y, angle y empuja a los dinámicos). shape: box o circle (diámetro (w+h)/2); si el sprite tiene mask, se usa la
+máscara. Un tilemap con physics es estático y choca con sus baldosas sólidas. density (masa = densidad x área en m²: una caja de
+50x50 con densidad 1 pesa 1), friction, restitution (rebote 0..1), fixed_rotation (no gira), gravity_scale, bullet (para cosas
+muy rápidas). La gravedad es la de la escena ("gravity", px/s²). Los dinámicos mueven a su instancia; "set x" los teletransporta.
+Acciones: apply_impulse(obj, ix, iy) (golpe: cambia la velocidad en impulso/masa px/s; -500 en Y hace saltar a una caja de 1 kg),
+apply_force(obj, fx, fy) (vale un cuadro: repítela cada cuadro; 980 en -Y sostiene a 1 kg contra la gravedad), set_velocity(obj, vx, vy),
+apply_torque(obj, t), set_angular_velocity(obj, grados/s), joint_distance(A, B, largo?) (cuerda: no se alejan más de largo px;
+vacío = la distancia actual), joint_revolute(A, B, x, y) (bisagra/clavo en el punto x, y del mundo; para colgar algo de un
+punto fijo usa un objeto static como B), remove_joints(obj). Las juntas se borran solas con sus objetos.
+Props: vx, vy (px/s) y angular_velocity (grados/s), de lectura y escritura. collides funciona igual con cuerpos físicos.
+
+### Buscar caminos (pathfinder + obstacle)
+pathfinder: { speed px/s, cell (tamaño de celda px), diagonals, rotate }. obstacle: objetos (o tilemaps) que esquiva.
+move_to(obj, x, y): busca un camino A* que rodea los obstáculos (dejando lugar para el tamaño del objeto) y lo recorre con su
+centro hasta (x, y). Llamarla cada cuadro con el mismo destino no recalcula; si el destino cambia de celda, recalcula.
+stop_path(obj). Condiciones path_found(obj) (hay camino) y path_done(obj) (llegó). Prop path_length = px que le faltan.
+Áreas enormes usan celdas más grandes (máx. 40000 celdas).
 
 ## Eventos
 { "kind"?: "standard"|"else"|"repeat"|"for_each"|"while"|"group"|"comment", "text"?: "...", "conds": [instr], "acts": [instr], "sub": [eventos], "disabled"? }
@@ -1051,12 +1089,23 @@ Para algo que ocurre una vez al entrar a la escena usa la condición "start". Pa
 Alarmas por instancia: set_alarm(obj, nombre, seg) y la condición alarm(obj, nombre).
 Tweens: tween(obj, prop, valor_final, seg, curva) con curva linear|ease_in|ease_out|ease_in_out|back|elastic|bounce.
 Cámara: camera_follow(obj, suavidad), camera_bounds(x0,y0,x1,y1), camera_shake(px, seg), camera_zoom_to(zoom, seg).
+Raycast: la condición raycast(desde, ángulo, distancia, objetivo) tira un rayo desde el centro de la primera instancia elegida
+de «desde» y elige la instancia de «objetivo» que toca primero (usa las formas de choque de cualquier objeto). Después,
+ray_x / ray_y = punto donde tocó (o el final del rayo si no tocó). Con "not": se cumple si no toca nada.
+Audio: play_sound(archivo, volumen, canal?) — con canal, reemplaza lo que sonaba en ese canal (voces, pasos);
+play_music(archivo, volumen, fundido_s?), channel_volume(canal, volumen, seg) (el canal "musica" es la música),
+stop_channel(canal), stop_music, stop_sound(archivo).
+Listas y estructuras: list_add(var, v), list_set(var, posición|campo, v), list_remove(var, posición|campo), list_clear(var);
+en expresiones lista[0], estructura["campo"], size(lista), has(lista, v), [1, 2, 3].
+Mandos: los botones llegan como teclas (Pad1A, Pad1B, Pad1X, Pad1Y, Pad1Start, Pad1Select, Pad1L, Pad1R, Pad1Up, Pad1Down,
+Pad1Left, Pad1Right; Pad2... el segundo mando) y los ejes con axis("Pad1LX") de -1 a 1 (Pad1LX, Pad1LY, Pad1RX, Pad1RY;
+gatillos Pad1LT, Pad1RT de 0 a 1); 0 si no hay mando.
 
 ## Scripts (Rhai) para lógica compleja
 Acción script(código) y condición script_if(código, el último valor es verdadero/falso). Funciones disponibles:
 get_var/set_var, get_global/set_global, saved(k, defecto)/save(k, v), picked(obj) y all(obj) (arrays de ids), count(obj),
 prop(id, p)/set_prop(id, p, v), object(id), exists(id), create(obj, x, y) -> id, destroy(id), key_down(k), key_pressed(k),
-mouse_x(), mouse_y(), random(a, b), dt(), time(), play_sound(archivo), change_scene(nombre), log(texto),
+mouse_x(), mouse_y(), axis(eje), random(a, b), dt(), time(), play_sound(archivo), change_scene(nombre), log(texto),
 dsin/dcos (grados), point_angle(x1,y1,x2,y2), point_distance(...). Números con decimales: escribe 1.0, no 1.
 Ejemplo: for id in picked("Enemigo") { set_prop(id, "x", prop(id, "x") + 60.0 * dt()); }
 
@@ -1078,12 +1127,13 @@ Var = nombre de variable; Func = función propia (los argumentos que siguen son 
 ## Expresiones
 Números, "texto", + - * / % ( ). Texto + algo = concatenación. Variables de escena, globales o parámetros por nombre.
 Comparaciones == != < > <= >= (también =) y lógica and, or, not: verdadero = 1, falso = 0. if(cond, a, b).
-Objeto.prop: x, y, cx, cy (centro), w, h, angle, opacity (0-255), z, speed, anim, text, o cualquier variable del objeto.
+Objeto.prop: x, y, cx, cy (centro), w, h, angle, opacity (0-255), z, speed, anim, text, vx, vy, angular_velocity,
+emitting, path_length, effect, effect_amount, scale_x, scale_y, tint, visible, o cualquier variable del objeto.
 Funciones: random(a,b) randint(a,b) abs min max clamp(v,a,b) floor ceil round sqrt pow sin cos (grados) lerp(a,b,t)
 angle(x1,y1,x2,y2) distance(x1,y1,x2,y2) atan2(y,x) lengthdir_x(largo,dir) lengthdir_y(largo,dir) sign tan
 str num len upper lower substr(t,desde,largo?) contains(t,parte) replace(t,a,b) fixed(n,decimales) pad(n,ancho)
-count(Objeto) picked(Objeto) timer("nombre") saved("clave", por_defecto) tile(Mapa, x, y).
-Variables especiales: dt (segundos del frame), time, mousex, mousey, screen_w, screen_h. true = 1, false = 0.
+count(Objeto) picked(Objeto) timer("nombre") saved("clave", por_defecto) tile(Mapa, x, y) axis("Pad1LX").
+Variables especiales: dt (segundos del frame), time, mousex, mousey, screen_w, screen_h, ray_x, ray_y. true = 1, false = 0.
 Propiedades conocidas: {:?}
 
 ## Teclas

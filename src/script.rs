@@ -99,6 +99,7 @@ fn engine() -> Engine {
     }));
     e.register_fn("key_down", |k: &str| with(|w, _| w.input.down.contains(k)));
     e.register_fn("key_pressed", |k: &str| with(|w, _| w.input.pressed.contains(k)));
+    e.register_fn("axis", |k: &str| with(|w, _| w.input.axes.get(k).copied().unwrap_or(0.) as f64));
     e.register_fn("mouse_x", || with(|w, _| w.mouse_on("").0 as f64));
     e.register_fn("mouse_y", || with(|w, _| w.mouse_on("").1 as f64));
     e.register_fn("random", |a: f64, b: f64| with(|w, _| a + w.random() * (b - a)));

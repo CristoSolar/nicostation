@@ -98,6 +98,19 @@ pub struct Inst {
     /// Alarmas que sonaron en este frame.
     pub fired: Vec<String>,
     tweens: Vec<Tween>,
+    /// Punto de origen de un sprite como fracción de w/h (0..1): x, y es ese punto, el giro y la escala pivotan ahí.
+    /// None = x, y es la esquina superior izquierda y gira alrededor del centro (lo de siempre).
+    pub origin: Option<(f32, f32)>,
+    /// Máscara de choque convexa como fracciones de w/h (0..1). Vacía = el rectángulo completo.
+    pub mask: Vec<(f32, f32)>,
+    /// Emisor de partículas: está soltando partículas (prop «emitting»), resto acumulado y ráfaga pendiente.
+    emitting: bool,
+    emit_acc: f32,
+    burst: u32,
+    /// Velocidad de giro pedida antes de que exista su cuerpo físico (grados/s).
+    angvel0: f32,
+    /// Búsqueda de caminos en curso (Pathfinder).
+    nav: Option<Box<crate::caminos::Camino>>,
 }
 
 /// Cambio suave de una propiedad numérica.
@@ -165,6 +178,8 @@ pub struct Particle {
     /// Objeto emisor (para leer su ParticleDef) y capa donde se dibuja.
     pub obj: String,
     pub layer: String,
+    /// Id de la instancia emisora.
+    pub emitter: u64,
 }
 
 /// Instancias elegidas por objeto real (no por grupo). Objeto ausente = todas sus instancias.
@@ -210,6 +225,11 @@ pub struct World {
     pub particles: Vec<Particle>,
     /// Perfilador: (qué, milisegundos) del último paso — eventos de primer nivel y comportamientos.
     pub profile: Vec<(String, f32)>,
+    /// Punto donde pegó el último `raycast` (o el final del rayo si no pegó): expresiones ray_x, ray_y.
+    pub ray_hit: (f32, f32),
+    fisica: crate::fisica2d::Fisica,
+    /// El próximo `run_events` es el de primer nivel del paso: mide cada evento para el perfilador.
+    prof_top: bool,
     tasks: Vec<Task>,
     types: HashMap<String, ObjectDef>,
     timers: HashMap<String, f64>,
@@ -229,7 +249,8 @@ pub struct World {
 }
 
 impl World {
-    pub fn new(project: Project) -> Self {
+    pub fn new(mut project: Project) -> Self {
+        migrate(&mut project);
         // Los grafos de nodos se compilan a eventos: el resto del motor solo ve eventos.
         let project = project.compiled();
         let first = project.first_scene.clone();
@@ -254,6 +275,9 @@ impl World {
             dim3: false,
             particles: vec![],
             profile: vec![],
+            ray_hit: (0., 0.),
+            fisica: Default::default(),
+            prof_top: false,
             tasks: vec![],
             types: HashMap::new(),
             timers: HashMap::new(),
@@ -313,6 +337,10 @@ impl World {
         self.time = 0.;
         self.first_frame = true;
         self.dragging = None;
+        self.fisica = Default::default();
+        self.particles.clear();
+        self.profile.clear();
+        self.ray_hit = (0., 0.);
         for i in &sc.instances {
             if !self.types.contains_key(&i.obj) {
                 continue;
@@ -349,8 +377,24 @@ impl World {
             Kind::Tilemap { cols, rows, data, .. } => (0..cols * rows).map(|k| data.get(k).copied().unwrap_or(-1)).collect(),
             _ => vec![],
         };
+        // Origen y máscara en píxeles del tamaño base → fracciones (siguen valiendo si la instancia cambia de tamaño).
+        let (origin, mask) = match &t.kind {
+            Kind::Sprite { origin, mask, .. } if w > 0. && h > 0. => (
+                origin.map(|o| (o[0] / w, o[1] / h)),
+                if mask.len() >= 3 { convex_hull(mask.iter().map(|p| (p[0] / w, p[1] / h)).collect()) } else { vec![] },
+            ),
+            _ => (None, vec![]),
+        };
+        let (emitting, burst) = match &t.kind {
+            Kind::Particles(d) => (true, d.burst),
+            _ => (false, 0),
+        };
         self.next_id += 1;
         self.insts.push(Inst {
+            origin,
+            mask,
+            emitting,
+            burst,
             id: self.next_id,
             obj: obj.into(),
             x,
@@ -401,6 +445,16 @@ impl World {
         out
     }
 
+    /// Formas de choque reales: como `shapes`, pero un sprite con máscara usa su polígono convexo.
+    /// Es lo que usan las colisiones, «cursor sobre», «separar», el raycast y los obstáculos de Pathfinder.
+    pub fn polys(&self, i: usize) -> Vec<Vec<(f32, f32)>> {
+        let me = &self.insts[i];
+        if !me.mask.is_empty() {
+            return vec![me.mask_poly()];
+        }
+        self.shapes(i).into_iter().map(|s| s.to_vec()).collect()
+    }
+
     /// Choques 3D: cajas alineadas a los ejes, centradas en (x, y, z) con tamaño (w, h, d).
     // ponytail: AABB sin rotación hasta la física 3D (rapier3d, etapa F4).
     fn hits3(&self, mine: &[usize], others: &[usize], dist: f32) -> Vec<(usize, usize)> {
@@ -431,15 +485,18 @@ impl World {
         if self.dim3 {
             return self.hits3(mine, others, dist);
         }
-        type Poly = [(f32, f32); 4];
+        type Poly = Vec<(f32, f32)>;
         let bounds = |s: &[Poly]| s.iter().flatten().fold((f32::MAX, f32::MAX, f32::MIN, f32::MIN), |b, p| (b.0.min(p.0), b.1.min(p.1), b.2.max(p.0), b.3.max(p.1)));
+        // Dos cuerpos físicos apoyados uno en otro pueden quedar a una fracción de píxel: también vale el contacto de rapier.
+        let phys = !self.fisica.is_empty();
+        let touching = |i: usize, j: usize| phys && self.fisica.tocando(self.insts[i].id, self.insts[j].id);
         const CELL: f32 = 128.;
         let cells = |b: (f32, f32, f32, f32)| {
             let (x0, y0, x1, y1) = ((b.0 / CELL).floor() as i32, (b.1 / CELL).floor() as i32, (b.2 / CELL).floor() as i32, (b.3 / CELL).floor() as i32);
             (x0, y0, x1, y1, (x1 - x0 + 1) as i64 * (y1 - y0 + 1) as i64)
         };
         let oth: Vec<(usize, Vec<Poly>, (f32, f32, f32, f32))> = others.iter().map(|&j| {
-            let s = self.shapes(j);
+            let s = self.polys(j);
             let b = bounds(&s);
             (j, s, b)
         }).filter(|o| !o.1.is_empty()).collect();
@@ -460,7 +517,7 @@ impl World {
         let mut out = vec![];
         let mut seen = vec![usize::MAX; oth.len()];
         for &i in mine {
-            let si = self.shapes(i);
+            let si = self.polys(i);
             if si.is_empty() {
                 continue;
             }
@@ -483,13 +540,19 @@ impl World {
                 }
                 seen[k] = i;
                 let (j, sj, bj) = &oth[k];
-                if *j == i || bq.0 > bj.2 || bj.0 > bq.2 || bq.1 > bj.3 || bj.1 > bq.3 {
+                if *j == i {
+                    continue;
+                }
+                if bq.0 > bj.2 || bj.0 > bq.2 || bq.1 > bj.3 || bj.1 > bq.3 {
+                    if dist <= 0. && touching(i, *j) {
+                        out.push((i, *j));
+                    }
                     continue;
                 }
                 let hit = if dist > 0. {
                     (self.insts[i].cx() - self.insts[*j].cx()).hypot(self.insts[i].cy() - self.insts[*j].cy()) < dist
                 } else {
-                    si.iter().any(|a| sj.iter().any(|b| sat(a, b).is_some()))
+                    si.iter().any(|a| sj.iter().any(|b| sat(a, b).is_some())) || touching(i, *j)
                 };
                 if hit {
                     out.push((i, *j));
@@ -510,11 +573,33 @@ impl World {
         self.tick_alarms();
         self.tick_tweens();
         self.run_tasks();
+        self.profile.clear();
+        let t = reloj::Reloj::ahora();
         self.behaviors_pre();
+        let t_beh = t.ms();
+        let t = reloj::Reloj::ahora();
+        self.physics_step();
+        let t_phys = t.ms();
         self.once_last = std::mem::take(&mut self.once_now);
         let p = self.project.clone();
+        self.prof_top = reloj::ACTIVO;
         self.run_events(&p.scenes[self.scene].events, &Sol::new());
+        self.prof_top = false;
+        let t = reloj::Reloj::ahora();
         self.behaviors_post();
+        let t_beh = t_beh + t.ms();
+        let t = reloj::Reloj::ahora();
+        self.particles_step();
+        let t_part = t.ms();
+        if reloj::ACTIVO {
+            self.profile.push(("Comportamientos".into(), t_beh));
+            if !self.fisica.is_empty() {
+                self.profile.push(("Física".into(), t_phys));
+            }
+            if !self.particles.is_empty() {
+                self.profile.push(("Partículas".into(), t_part));
+            }
+        }
         self.update_camera();
         self.insts.retain(|i| !i.dead);
         self.first_frame = false;
@@ -624,19 +709,32 @@ impl World {
     fn run_events(&mut self, evs: &[Event], sol: &Sol) {
         // Cadena normal → «si no» → «si no»: ¿ya se cumplió algún eslabón? (None = no hay cadena abierta)
         let mut chain: Option<bool> = None;
-        for e in evs {
+        // Perfilador: solo los eventos de primer nivel de la escena (los anidados cuentan dentro de su padre).
+        let top = std::mem::take(&mut self.prof_top);
+        for (n, e) in evs.iter().enumerate() {
             if e.disabled || self.pending.is_some() {
                 continue;
             }
+            let t = top.then(reloj::Reloj::ahora);
+            self.run_event(e, sol, &mut chain);
+            if let Some(t) = t {
+                let ms = t.ms();
+                self.profile.push((event_label(n, e), ms));
+            }
+        }
+    }
+
+    fn run_event(&mut self, e: &Event, sol: &Sol, chain: &mut Option<bool>) {
+        {
             match e.kind {
                 EventKind::Comment => {}
-                EventKind::Standard => chain = Some(self.run_once(e, sol.clone())),
+                EventKind::Standard => *chain = Some(self.run_once(e, sol.clone())),
                 EventKind::Else => {
-                    if chain != Some(true) {
-                        chain = Some(self.run_once(e, sol.clone()));
+                    if *chain != Some(true) {
+                        *chain = Some(self.run_once(e, sol.clone()));
                     }
                 }
-                _ => chain = None,
+                _ => *chain = None,
             }
             match e.kind {
                 EventKind::Comment | EventKind::Standard | EventKind::Else => {}
@@ -843,7 +941,7 @@ impl World {
             }
             "cursor_on" => self.filter(a(0), c.not, sol, |w, i| {
                 let (mx, my) = w.mouse_on(&w.insts[i].layer);
-                w.shapes(i).iter().any(|s| point_in(s, mx, my))
+                w.polys(i).iter().any(|s| point_in(s, mx, my))
             }),
             "compare_prop" => {
                 let (prop, op, val) = (a(1).to_string(), a(2).to_string(), a(3).to_string());
@@ -862,6 +960,41 @@ impl World {
             "grabbing" => self.filter(a(0), c.not, sol, |w, i| w.insts[i].pstate == GRABBING),
             "tweening" => self.filter(a(0), c.not, sol, |w, i| !w.insts[i].tweens.is_empty()),
             "is_moving" => self.filter(a(0), c.not, sol, |w, i| w.insts[i].vx != 0. || w.insts[i].vy != 0.),
+            "path_found" => self.filter(a(0), c.not, sol, |w, i| w.insts[i].nav.as_ref().is_some_and(|n| n.encontrado)),
+            "path_done" => self.filter(a(0), c.not, sol, |w, i| w.insts[i].nav.as_ref().is_some_and(|n| n.llego)),
+            "raycast" => {
+                // Rayo desde el centro de la primera instancia elegida de a(0); elige la instancia de a(3) que toca primero.
+                let Some(&from) = self.pick(a(0), sol).first() else { return free(false) };
+                let ang = (self.ev(a(1), sol, Some(from)).num() as f32).to_radians();
+                let dist = (self.ev(a(2), sol, Some(from)).num() as f32).max(0.);
+                let (ox, oy) = (self.insts[from].cx(), self.insts[from].cy());
+                let (dx, dy) = (ang.cos(), ang.sin());
+                let mut best: Option<(f32, usize)> = None;
+                for j in self.pick(a(3), sol) {
+                    if j == from {
+                        continue;
+                    }
+                    for poly in self.polys(j) {
+                        if let Some(t) = ray_poly((ox, oy), (dx, dy), dist, &poly) {
+                            if best.is_none_or(|b| t < b.0) {
+                                best = Some((t, j));
+                            }
+                        }
+                    }
+                }
+                let t = best.map_or(dist, |b| b.0);
+                self.ray_hit = (ox + dx * t, oy + dy * t);
+                if c.not {
+                    return best.is_none();
+                }
+                match best {
+                    Some((_, j)) => {
+                        self.set_picked(a(3), sol, vec![j]);
+                        true
+                    }
+                    None => false,
+                }
+            }
             op => {
                 self.warn(format!("condición desconocida: {op}"));
                 false
@@ -936,8 +1069,8 @@ impl World {
                 for i in self.pick(a(0), sol) {
                     for &j in &obstacles {
                         if i != j {
-                            for shape in self.shapes(j) {
-                                if let Some((dx, dy)) = sat(&self.insts[i].hitbox(), &shape) {
+                            for shape in self.polys(j) {
+                                if let Some((dx, dy)) = sat(&self.insts[i].mask_poly(), &shape) {
                                     self.insts[i].x += dx;
                                     self.insts[i].y += dy;
                                 }
@@ -1100,6 +1233,94 @@ impl World {
                     }
                 }
             }
+            "apply_force" | "apply_impulse" | "set_velocity" => {
+                for i in self.pick(a(0), sol) {
+                    let (x, y) = (num(self, a(1), sol, Some(i)), num(self, a(2), sol, Some(i)));
+                    let id = self.insts[i].id;
+                    match c.op.as_str() {
+                        "apply_force" => self.fisica.fuerza(id, x, y),
+                        "apply_impulse" => self.fisica.impulso(id, x, y),
+                        _ => {
+                            self.put(i, "vx", Value::Num(x as f64));
+                            self.put(i, "vy", Value::Num(y as f64));
+                        }
+                    }
+                }
+            }
+            "apply_torque" => {
+                for i in self.pick(a(0), sol) {
+                    let t = num(self, a(1), sol, Some(i));
+                    self.fisica.torque(self.insts[i].id, t);
+                }
+            }
+            "set_angular_velocity" => {
+                for i in self.pick(a(0), sol) {
+                    let v = self.ev(a(1), sol, Some(i));
+                    self.put(i, "angular_velocity", v);
+                }
+            }
+            "joint_distance" | "joint_revolute" => {
+                // Cada instancia elegida de a(0) se une a la primera elegida de a(1) (que no sea ella misma).
+                // Los cuerpos se crean en el paso de física: si son nuevos, se crean ya para poder unirlos.
+                self.physics_sync();
+                let others = self.pick(a(1), sol);
+                for i in self.pick(a(0), sol) {
+                    let Some(&j) = others.iter().find(|&&j| j != i) else { continue };
+                    let (ia, ib) = (self.insts[i].id, self.insts[j].id);
+                    let ok = if c.op == "joint_distance" {
+                        let len = if a(2).trim().is_empty() { None } else { Some(num(self, a(2), sol, Some(i))) };
+                        self.fisica.junta_distancia(ia, ib, len)
+                    } else {
+                        let (x, y) = (num(self, a(2), sol, Some(i)), num(self, a(3), sol, Some(i)));
+                        self.fisica.junta_giro(ia, ib, x, y)
+                    };
+                    if !ok {
+                        self.warn(format!("{}: «{}» y «{}» necesitan el comportamiento física", c.op, a(0), a(1)));
+                    }
+                }
+            }
+            "remove_joints" => {
+                for i in self.pick(a(0), sol) {
+                    self.fisica.sacar_juntas(self.insts[i].id);
+                }
+            }
+            "move_to" => {
+                for i in self.pick(a(0), sol) {
+                    let (x, y) = (num(self, a(1), sol, Some(i)), num(self, a(2), sol, Some(i)));
+                    self.path_to(i, x, y);
+                }
+            }
+            "stop_path" => {
+                for i in self.pick(a(0), sol) {
+                    let me = &mut self.insts[i];
+                    if let Some(n) = me.nav.as_mut() {
+                        n.puntos.clear();
+                    }
+                    (me.vx, me.vy) = (0., 0.);
+                }
+            }
+            "emit_burst" => {
+                for i in self.pick(a(0), sol) {
+                    let n = num(self, a(1), sol, Some(i)).max(0.);
+                    self.insts[i].burst += n as u32;
+                }
+            }
+            "set_emitting" => {
+                for i in self.pick(a(0), sol) {
+                    let v = self.ev(a(1), sol, Some(i));
+                    self.put(i, "emitting", v);
+                }
+            }
+            "set_effect" => {
+                let amount = if a(2).trim().is_empty() { None } else { Some(num(self, a(2), sol, None)) };
+                for i in self.pick(a(0), sol) {
+                    let me = &mut self.insts[i];
+                    me.effect = a(1).to_string();
+                    if let Some(k) = amount {
+                        me.effect_amount = k.clamp(0., 1.);
+                    }
+                }
+            }
             "wait" => {} // lo maneja body()
             "script" => {
                 crate::script::run(self, sol, a(0));
@@ -1177,19 +1398,42 @@ impl World {
             "tint" => Value::Str(format!("#{:02x}{:02x}{:02x}", me.tint[0], me.tint[1], me.tint[2])),
             "anim" => Value::Str(self.anim_name(i)),
             "text" => Value::Str(me.text.clone()),
+            // Velocidad (px/s): la del cuerpo físico si tiene; si no, la de su movimiento (top_down, pathfinder...).
+            "vx" => n(self.fisica.velocidad(me.id).map_or(me.vx, |v| v.0)),
+            "vy" => n(self.fisica.velocidad(me.id).map_or(me.vy, |v| v.1)),
+            "angular_velocity" => n(self.fisica.giro(me.id).unwrap_or(me.angvel0)),
+            "emitting" => Value::Num(me.emitting as i32 as f64),
+            "path_length" => n(me.nav.as_ref().map_or(0., |c| c.largo(me.cx(), me.cy()))),
             _ => me.vars.get(p).cloned().unwrap_or(Value::Num(0.)),
         }
     }
 
     pub(crate) fn put(&mut self, i: usize, p: &str, v: Value) {
         let dim3 = self.dim3;
-        let me = &mut self.insts[i];
         let f = v.num() as f32;
+        let id = self.insts[i].id;
+        match p {
+            "vx" | "vy" if self.fisica.tiene(id) => {
+                let (mut vx, mut vy) = self.fisica.velocidad(id).unwrap_or_default();
+                if p == "vx" { vx = f } else { vy = f }
+                return self.fisica.poner_velocidad(id, vx, vy);
+            }
+            "angular_velocity" if self.fisica.tiene(id) => return self.fisica.poner_giro(id, f),
+            _ => {}
+        }
+        let me = &mut self.insts[i];
         match p {
             "x" => me.x = f,
             "y" => me.y = f,
-            "cx" => me.x = f - me.w / 2.,
-            "cy" => me.y = f - me.h / 2.,
+            "cx" if me.origin.is_none() => me.x = f - me.w / 2.,
+            "cy" if me.origin.is_none() => me.y = f - me.h / 2.,
+            "cx" => me.x += f - me.cx(),
+            "cy" => me.y += f - me.cy(),
+            // Antes de tener cuerpo físico (o sin física): la velocidad del movimiento.
+            "vx" => me.vx = f,
+            "vy" => me.vy = f,
+            "angular_velocity" => me.angvel0 = f,
+            "emitting" => me.emitting = v.truthy(),
             "w" => me.w = f,
             "h" => me.h = f,
             "angle" => me.angle = f,
@@ -1206,6 +1450,9 @@ impl World {
             // Escala alrededor del centro, como image_xscale de GameMaker.
             "scale_x" if dim3 => me.w = me.base_w * f,
             "scale_y" if dim3 => me.h = me.base_h * f,
+            // Con punto de origen, la escala es alrededor del origen (x, y no cambian).
+            "scale_x" if me.origin.is_some() => me.w = me.base_w * f,
+            "scale_y" if me.origin.is_some() => me.h = me.base_h * f,
             "scale_x" => {
                 let c = me.cx();
                 me.w = me.base_w * f;
@@ -1256,13 +1503,7 @@ impl World {
     }
 
     pub(crate) fn random(&self) -> f64 {
-        // xorshift64*
-        let mut x = self.rng.get();
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.rng.set(x);
-        (x.wrapping_mul(0x2545F4914F6CDD1D) >> 11) as f64 / (1u64 << 53) as f64
+        next_random(&self.rng)
     }
 
     pub fn layer_fixed(&self, layer: &str) -> bool {
@@ -1325,7 +1566,16 @@ impl World {
             }
             for b in self.types[&self.insts[i].obj].behaviors.clone() {
                 match b {
-                    Behavior::Platformer { .. } => self.platformer(i, &b, &plats),
+                    Behavior::Platformer { .. } => {
+                        // El Platformer trabaja con la caja sin girar desde su esquina: con punto de origen, se corre.
+                        let (ox, oy) = self.insts[i].origin_offset();
+                        self.insts[i].x -= ox;
+                        self.insts[i].y -= oy;
+                        self.platformer(i, &b, &plats);
+                        self.insts[i].x += ox;
+                        self.insts[i].y += oy;
+                    }
+                    Behavior::Pathfinder { speed, rotate, .. } => self.follow_path(i, speed, rotate),
                     Behavior::TopDown { max_speed, acceleration, deceleration, allow_diagonals, rotate } => {
                         let (mut dx, mut dy) = (self.key("Right") - self.key("Left"), self.key("Down") - self.key("Up"));
                         let me = &mut self.insts[i];
@@ -1626,6 +1876,188 @@ impl World {
         }
     }
 
+    // ---------- física 2D ----------
+
+    /// Instancias con Physics → cuerpos de rapier (crea los nuevos, mueve los teletransportados, quita los muertos).
+    fn physics_sync(&mut self) {
+        use crate::fisica2d::{Def, Forma, Tipo};
+        if self.dim3 {
+            return;
+        }
+        let mut alive = HashSet::new();
+        for i in 0..self.insts.len() {
+            if self.insts[i].dead {
+                continue;
+            }
+            let t = &self.types[&self.insts[i].obj];
+            let Some((b, circle)) = t.behaviors.iter().find_map(|b| match b {
+                Behavior::Physics { shape, .. } => Some((b, shape == "circle")),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let Some(mut def) = Def::de(b) else { continue };
+            let me = &self.insts[i];
+            let forma = if matches!(t.kind, Kind::Tilemap { .. }) {
+                def.tipo = Tipo::Estatico; // un mapa no se cae
+                Forma::Tiras(self.shapes(i))
+            } else if !me.mask.is_empty() {
+                Forma::Poligono(me.mask.iter().map(|&(mx, my)| ((if me.flip_x { 1. - mx } else { mx } - 0.5) * me.w, (my - 0.5) * me.h)).collect())
+            } else if circle {
+                Forma::Circulo((me.w + me.h) / 4.)
+            } else {
+                Forma::Caja(me.w / 2., me.h / 2.)
+            };
+            let (id, center, angle, vel, w0) = (me.id, (me.cx(), me.cy()), me.angle, (me.vx, me.vy), me.angvel0);
+            let created = !self.fisica.tiene(id);
+            self.fisica.entrar(id, def, center, angle, forma, vel);
+            if created && w0 != 0. {
+                self.fisica.poner_giro(id, w0);
+            }
+            alive.insert(id);
+        }
+        self.fisica.retener(|id| alive.contains(&id));
+    }
+
+    fn physics_step(&mut self) {
+        self.physics_sync();
+        if self.fisica.is_empty() {
+            return;
+        }
+        let g = self.scene_def().gravity;
+        self.fisica.paso(self.dt, g);
+        for i in 0..self.insts.len() {
+            let id = self.insts[i].id;
+            let Some((x, y, a)) = self.fisica.pose(id) else { continue };
+            let vel = self.fisica.velocidad(id).unwrap_or_default();
+            let me = &mut self.insts[i];
+            if let Some(a) = a {
+                me.angle = a;
+            }
+            me.set_center(x, y);
+            (me.vx, me.vy) = vel;
+            let (c, a) = ((me.cx(), me.cy()), me.angle);
+            self.fisica.anotar(id, c, a);
+        }
+    }
+
+    // ---------- búsqueda de caminos ----------
+
+    /// Pide ir a (x, y): busca un camino nuevo si el destino cambió de celda; si no, solo corrige el último punto.
+    fn path_to(&mut self, i: usize, x: f32, y: f32) {
+        let Some((cell, diagonals)) = self.types[&self.insts[i].obj].behaviors.iter().find_map(|b| match b {
+            Behavior::Pathfinder { cell, diagonals, .. } => Some((*cell, *diagonals)),
+            _ => None,
+        }) else {
+            return self.warn(format!("move_to: «{}» necesita el comportamiento pathfinder", self.insts[i].obj));
+        };
+        if let Some(n) = self.insts[i].nav.as_mut() {
+            if n.destino == (x, y) {
+                return;
+            }
+            let same_cell = |a: (f32, f32), b: (f32, f32)| (a.0 / n.celda).floor() == (b.0 / n.celda).floor() && (a.1 / n.celda).floor() == (b.1 / n.celda).floor();
+            if n.encontrado && !n.puntos.is_empty() && n.celda > 0. && same_cell(n.destino, (x, y)) {
+                n.destino = (x, y);
+                *n.puntos.last_mut().expect("puntos") = (x, y);
+                return;
+            }
+        }
+        let me = &self.insts[i];
+        let (cx, cy, hw, hh) = (me.cx(), me.cy(), me.w / 2., me.h / 2.);
+        let mut obst: Vec<Vec<(f32, f32)>> = vec![];
+        for j in 0..self.insts.len() {
+            if j != i && !self.insts[j].dead && self.types[&self.insts[j].obj].behaviors.contains(&Behavior::Obstacle) {
+                obst.extend(self.polys(j));
+            }
+        }
+        let margin = 2. * cell + hw.max(hh) * 2.;
+        let mut area = (cx.min(x) - margin, cy.min(y) - margin, cx.max(x) + margin, cy.max(y) + margin);
+        for p in obst.iter().flatten() {
+            area = (area.0.min(p.0 - margin), area.1.min(p.1 - margin), area.2.max(p.0 + margin), area.3.max(p.1 + margin));
+        }
+        let g = crate::caminos::Grilla::nueva(area, cell, &obst, (hw, hh));
+        let found = g.buscar((cx, cy), (x, y), diagonals);
+        let me = &mut self.insts[i];
+        me.nav = Some(Box::new(crate::caminos::Camino {
+            destino: (x, y),
+            encontrado: found.is_some(),
+            llego: false,
+            puntos: found.unwrap_or_default(),
+            celda: g.cell,
+        }));
+        if me.nav.as_ref().is_some_and(|n| n.puntos.is_empty()) {
+            (me.vx, me.vy) = (0., 0.);
+        }
+    }
+
+    /// Avanza por el camino a `speed` px/s (girando hacia donde camina si `rotate`).
+    fn follow_path(&mut self, i: usize, speed: f32, rotate: bool) {
+        let dt = self.dt;
+        let me = &mut self.insts[i];
+        let (cx, cy) = (me.cx(), me.cy());
+        let Some(nav) = me.nav.as_mut() else { return };
+        if nav.puntos.is_empty() {
+            return;
+        }
+        let (mut x, mut y, mut left) = (cx, cy, speed.max(0.) * dt);
+        while left > 0. && !nav.puntos.is_empty() {
+            let p = nav.puntos[0];
+            let d = (p.0 - x).hypot(p.1 - y);
+            if d <= left {
+                (x, y) = p;
+                left -= d;
+                nav.puntos.remove(0);
+            } else {
+                x += (p.0 - x) / d * left;
+                y += (p.1 - y) / d * left;
+                left = 0.;
+            }
+        }
+        let done = nav.puntos.is_empty();
+        nav.llego = done;
+        let (dx, dy) = (x - cx, y - cy);
+        if rotate && (dx != 0. || dy != 0.) {
+            me.angle = dy.atan2(dx).to_degrees();
+        }
+        me.set_center(x, y);
+        (me.vx, me.vy) = if done || dt <= 0. { (0., 0.) } else { (dx / dt, dy / dt) };
+    }
+
+    // ---------- partículas ----------
+
+    /// Mueve las partículas y hace emitir a los emisores (ráfagas pendientes y `rate` por segundo).
+    fn particles_step(&mut self) {
+        let dt = self.dt;
+        let types = &self.types;
+        crate::particulas::mover(&mut self.particles, dt, |o| match types.get(o).map(|t| &t.kind) {
+            Some(Kind::Particles(d)) => d.gravity,
+            _ => [0., 0.],
+        });
+        let mut counts: HashMap<u64, usize> = HashMap::new();
+        for p in &self.particles {
+            *counts.entry(p.emitter).or_default() += 1;
+        }
+        let rng = &self.rng;
+        let rnd = || next_random(rng) as f32;
+        for me in self.insts.iter_mut().filter(|m| !m.dead) {
+            let Some(Kind::Particles(def)) = types.get(&me.obj).map(|t| &t.kind) else { continue };
+            let have = counts.get(&me.id).copied().unwrap_or(0);
+            let mut n = std::mem::take(&mut me.burst) as usize;
+            if me.emitting && def.rate > 0. {
+                me.emit_acc += def.rate * dt;
+                let k = me.emit_acc.floor();
+                me.emit_acc -= k;
+                n += k as usize;
+            }
+            let n = n.min(def.max.saturating_sub(have));
+            let (cx, cy) = (me.cx(), me.cy());
+            crate::particulas::emitir(def, n, cx, cy, me.angle, &me.obj, &me.layer, me.id, &rnd, &mut self.particles);
+            if def.auto_destroy && (!me.emitting || def.rate <= 0.) && have + n == 0 {
+                me.dead = true;
+            }
+        }
+    }
+
     fn behaviors_post(&mut self) {
         let p = self.project.clone();
         let (vw, vh) = (p.width / self.zoom, p.height / self.zoom);
@@ -1633,6 +2065,10 @@ impl World {
             for b in &self.types[&self.insts[i].obj].behaviors {
                 let fixed = self.layer_fixed(&self.insts[i].layer);
                 let me = &mut self.insts[i];
+                // Estos trabajan con la esquina superior izquierda (con punto de origen, se corre y se devuelve).
+                let (ox, oy) = me.origin_offset();
+                me.x -= ox;
+                me.y -= oy;
                 match b {
                     Behavior::DestroyOutside => {
                         let (cx, cy) = if fixed { (p.width / 2., p.height / 2.) } else { self.camera };
@@ -1653,23 +2089,233 @@ impl World {
                     }
                     _ => {}
                 }
+                me.x += ox;
+                me.y += oy;
             }
         }
     }
 }
 
 impl Inst {
+    /// Centro del rectángulo (ya girado).
     pub fn cx(&self) -> f32 {
-        self.x + self.w / 2.
+        match self.origin {
+            None => self.x + self.w / 2.,
+            Some(_) => self.local_to_world(self.w / 2., self.h / 2.).0,
+        }
     }
     pub fn cy(&self) -> f32 {
-        self.y + self.h / 2.
+        match self.origin {
+            None => self.y + self.h / 2.,
+            Some(_) => self.local_to_world(self.w / 2., self.h / 2.).1,
+        }
     }
-    /// Rectángulo rotado alrededor de su centro.
+    /// Punto de giro en el mundo: el origen (x, y) si tiene, si no el centro.
+    pub fn pivot(&self) -> (f32, f32) {
+        match self.origin {
+            None => (self.x + self.w / 2., self.y + self.h / 2.),
+            Some(_) => (self.x, self.y),
+        }
+    }
+    /// Cuánto hay de la esquina superior izquierda (sin girar) a x, y: (0, 0) sin punto de origen.
+    pub fn origin_offset(&self) -> (f32, f32) {
+        self.origin.map_or((0., 0.), |(ox, oy)| (ox * self.w, oy * self.h))
+    }
+    /// Punto del rectángulo (en px desde su esquina superior izquierda, sin girar) → mundo.
+    pub fn local_to_world(&self, lx: f32, ly: f32) -> (f32, f32) {
+        let (px, py) = self.pivot();
+        let (plx, ply) = match self.origin {
+            None => (self.w / 2., self.h / 2.),
+            Some((ox, oy)) => (ox * self.w, oy * self.h),
+        };
+        let (c, s) = (self.angle.to_radians().cos(), self.angle.to_radians().sin());
+        let (x, y) = (lx - plx, ly - ply);
+        (px + x * c - y * s, py + x * s + y * c)
+    }
+    /// Rectángulo girado (alrededor del centro, o del punto de origen si tiene).
     pub fn hitbox(&self) -> [(f32, f32); 4] {
+        if self.origin.is_some() {
+            return [(0., 0.), (self.w, 0.), (self.w, self.h), (0., self.h)].map(|(x, y)| self.local_to_world(x, y));
+        }
         let (c, s) = (self.angle.to_radians().cos(), self.angle.to_radians().sin());
         let (hw, hh) = (self.w / 2., self.h / 2.);
         [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)].map(|(x, y)| (self.cx() + x * c - y * s, self.cy() + x * s + y * c))
+    }
+    /// Forma de choque: la máscara (polígono convexo, girado y escalado con la instancia; `flip_x` la espeja)
+    /// o, sin máscara, el rectángulo de `hitbox`.
+    pub fn mask_poly(&self) -> Vec<(f32, f32)> {
+        if self.mask.is_empty() {
+            return self.hitbox().to_vec();
+        }
+        self.mask.iter().map(|&(mx, my)| self.local_to_world(if self.flip_x { 1. - mx } else { mx } * self.w, my * self.h)).collect()
+    }
+    /// Para dibujar: (esquina superior izquierda sin girar x, y, ancho, alto, punto de giro x, y).
+    /// Se dibuja el rectángulo (x, y, w, h) girado `angle` grados alrededor de (pivot_x, pivot_y).
+    /// Equivale a dibujar centrado en (cx(), cy()) girando alrededor del centro.
+    pub fn draw_rect(&self) -> (f32, f32, f32, f32, f32, f32) {
+        let (ox, oy) = self.origin_offset();
+        let (px, py) = self.pivot();
+        match self.origin {
+            None => (self.x, self.y, self.w, self.h, px, py),
+            Some(_) => (self.x - ox, self.y - oy, self.w, self.h, px, py),
+        }
+    }
+    /// Pone el centro del rectángulo (ya girado) en (cx, cy) moviendo x, y.
+    pub fn set_center(&mut self, cx: f32, cy: f32) {
+        let (dx, dy) = (cx - self.cx(), cy - self.cy());
+        self.x += dx;
+        self.y += dy;
+    }
+}
+
+/// Número al azar en [0, 1) (xorshift64*).
+fn next_random(rng: &Cell<u64>) -> f64 {
+    let mut x = rng.get();
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    rng.set(x);
+    (x.wrapping_mul(0x2545F4914F6CDD1D) >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// Envoltura convexa (cadena monótona). Devuelve los puntos en orden; con menos de 3 distintos, vacío.
+pub fn convex_hull(mut pts: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    pts.dedup();
+    if pts.len() < 3 {
+        return vec![];
+    }
+    let cross = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
+    let mut h: Vec<(f32, f32)> = vec![];
+    for pass in 0..2 {
+        let start = h.len();
+        let iter: Box<dyn Iterator<Item = &(f32, f32)>> = if pass == 0 { Box::new(pts.iter()) } else { Box::new(pts.iter().rev()) };
+        for &p in iter {
+            while h.len() >= start + 2 && cross(h[h.len() - 2], h[h.len() - 1], p) <= 0. {
+                h.pop();
+            }
+            h.push(p);
+        }
+        h.pop();
+    }
+    if h.len() < 3 { vec![] } else { h }
+}
+
+/// Distancia a la que un rayo (origen, dirección unitaria, largo máximo) entra en un polígono convexo.
+/// 0 si el origen está adentro; None si no lo toca.
+pub fn ray_poly(o: (f32, f32), d: (f32, f32), max: f32, poly: &[(f32, f32)]) -> Option<f32> {
+    let n = poly.len();
+    if n < 3 {
+        return None;
+    }
+    let c = poly.iter().fold((0., 0.), |s, p| (s.0 + p.0 / n as f32, s.1 + p.1 / n as f32));
+    let (mut t0, mut t1) = (0f32, max);
+    for k in 0..n {
+        let (p, q) = (poly[k], poly[(k + 1) % n]);
+        let (mut nx, mut ny) = (q.1 - p.1, p.0 - q.0);
+        if nx == 0. && ny == 0. {
+            continue;
+        }
+        // Normal hacia afuera.
+        if nx * (c.0 - p.0) + ny * (c.1 - p.1) > 0. {
+            (nx, ny) = (-nx, -ny);
+        }
+        let num = nx * (p.0 - o.0) + ny * (p.1 - o.1);
+        let den = nx * d.0 + ny * d.1;
+        if den == 0. {
+            if num < 0. {
+                return None;
+            }
+            continue;
+        }
+        let t = num / den;
+        if den < 0. { t0 = t0.max(t) } else { t1 = t1.min(t) }
+        if t0 > t1 {
+            return None;
+        }
+    }
+    Some(t0)
+}
+
+/// Parte un texto en líneas que no pasen de `wrap_width` px. `measure(texto)` da el ancho en px con la fuente
+/// y el tamaño `font_size_px` que usa el reproductor. Respeta los saltos de línea; wrap_width <= 0 = no parte.
+/// Una palabra más larga que el ancho se corta por letras.
+pub fn wrap_lines(text: &str, font_size_px: f32, wrap_width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
+    let _ = font_size_px; // lo usa `measure`; queda en la firma para que los reproductores pasen lo mismo
+    let mut out = vec![];
+    for para in text.split('\n') {
+        if wrap_width <= 0. {
+            out.push(para.to_string());
+            continue;
+        }
+        let mut line = String::new();
+        for word in para.split(' ') {
+            let cand = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            if measure(&cand) <= wrap_width {
+                line = cand;
+                continue;
+            }
+            if !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            if measure(word) <= wrap_width {
+                line = word.to_string();
+                continue;
+            }
+            // La palabra sola no entra: cortarla por letras.
+            for ch in word.chars() {
+                let cand = format!("{line}{ch}");
+                if !line.is_empty() && measure(&cand) > wrap_width {
+                    out.push(std::mem::take(&mut line));
+                    line.push(ch);
+                } else {
+                    line = cand;
+                }
+            }
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// Nombre de un evento de primer nivel para el perfilador: «Evento 3: Tecla Space presionada».
+fn event_label(n: usize, e: &Event) -> String {
+    let what = match e.kind {
+        EventKind::Group => format!("grupo «{}»", e.text),
+        EventKind::Comment => "comentario".into(),
+        EventKind::Repeat => format!("repetir {} veces", e.text),
+        EventKind::ForEach => format!("para cada {}", e.text),
+        EventKind::While => format!("mientras {}", e.conds.first().map(crate::catalog::sentence).unwrap_or_default()),
+        _ => e.conds.first().map(crate::catalog::sentence).unwrap_or_else(|| "siempre".into()),
+    };
+    format!("Evento {}: {what}", n + 1)
+}
+
+/// Reloj del perfilador. En WebAssembly `Instant` no existe (entra en pánico): ahí no se mide.
+#[cfg(not(target_arch = "wasm32"))]
+mod reloj {
+    pub const ACTIVO: bool = true;
+    pub struct Reloj(std::time::Instant);
+    impl Reloj {
+        pub fn ahora() -> Self {
+            Reloj(std::time::Instant::now())
+        }
+        pub fn ms(&self) -> f32 {
+            self.0.elapsed().as_secs_f32() * 1000.
+        }
+    }
+}
+#[cfg(target_arch = "wasm32")]
+mod reloj {
+    pub const ACTIVO: bool = false;
+    pub struct Reloj;
+    impl Reloj {
+        pub fn ahora() -> Self {
+            Reloj
+        }
+        pub fn ms(&self) -> f32 {
+            0.
+        }
     }
 }
 
@@ -1720,11 +2366,13 @@ fn top_between(poly: &[(f32, f32)], x0: f32, x1: f32) -> Option<f32> {
     best
 }
 
+/// Punto dentro de un polígono convexo (en cualquiera de los dos sentidos de giro).
 fn point_in(poly: &[(f32, f32)], x: f32, y: f32) -> bool {
-    (0..poly.len()).all(|k| {
+    let side = |k: usize| {
         let (p, q) = (poly[k], poly[(k + 1) % poly.len()]);
-        (q.0 - p.0) * (y - p.1) - (q.1 - p.1) * (x - p.0) >= 0.
-    })
+        (q.0 - p.0) * (y - p.1) - (q.1 - p.1) * (x - p.0)
+    };
+    (0..poly.len()).all(|k| side(k) >= 0.) || (0..poly.len()).all(|k| side(k) <= 0.)
 }
 
 /// Velocidad con aceleración/frenado (PlatformerObject de GDevelop).
@@ -1816,6 +2464,8 @@ impl Ctx for Ev<'_> {
             "mousey" => my as f64,
             "screen_w" => w.project.width as f64,
             "screen_h" => w.project.height as f64,
+            "ray_x" => w.ray_hit.0 as f64,
+            "ray_y" => w.ray_hit.1 as f64,
             _ => 0.,
         })
     }
@@ -1839,6 +2489,15 @@ impl Ctx for Ev<'_> {
         Some(Value::Num(match name {
             "count" => w.expand(&obj()).iter().map(|o| w.all_of(o).count()).sum::<usize>() as f64,
             "picked" => w.pick(&obj(), self.sol).len() as f64,
+            // axis("Pad1LX"): eje de un mando de -1 a 1 (0 si no hay mando).
+            "axis" => {
+                let k = match args.first() {
+                    Some(Expr::Var(v)) if w.input.axes.contains_key(v) => v.clone(),
+                    Some(a) => expr::eval(a, self).text(),
+                    None => String::new(),
+                };
+                w.input.axes.get(&k).copied().unwrap_or(0.) as f64
+            }
             // saved("clave", por_defecto): valor de la partida guardada
             "saved" => {
                 let k = args.first().map(|a| expr::eval(a, self).text()).unwrap_or_default();
@@ -2268,5 +2927,241 @@ mod tests {
         assert!(sat(&a.hitbox(), &b.hitbox()).is_none());
         b.angle = 45.; // la esquina rotada alcanza a A
         assert!(sat(&a.hitbox(), &b.hitbox()).is_some());
+    }
+
+    /// Escena de 800x600 con los objetos, instancias y eventos dados (JSON sin corchetes externos).
+    fn escena(extra: &str, objetos: &str, instancias: &str, eventos: &str) -> World {
+        world(&format!(r#"{{"name":"t","width":800,"height":600,"first_scene":"S","scenes":[{{"name":"S"{extra},
+            "objects":[{objetos}],"instances":[{instancias}],"events":[{eventos}]}}]}}"#))
+    }
+
+    fn por_obj<'a>(w: &'a World, o: &str) -> &'a Inst {
+        w.insts.iter().find(|i| i.obj == o).unwrap()
+    }
+
+    const PISO_FISICO: &str = r#"{"name":"Piso","type":"box","w":800,"h":40,"color":[0,0,0],"behaviors":[{"type":"physics","body":"static"}]}"#;
+
+    #[test]
+    fn fisica_cae_y_reposa() {
+        let mut w = escena("", &format!(r#"{PISO_FISICO},
+            {{"name":"Caja","type":"box","w":40,"h":40,"color":[0,0,0],"behaviors":[{{"type":"physics"}}]}}"#),
+            r#"{"obj":"Caja","x":380,"y":100},{"obj":"Piso","x":0,"y":500}"#,
+            r#"{"conds":[{"op":"collides","args":["Caja","Piso"]}],"acts":[{"op":"set_var","args":["toca","1"]}]}"#);
+        correr(&mut w, 0.3, &[]);
+        assert!(por_obj(&w, "Caja").y > 130., "cae: y = {}", por_obj(&w, "Caja").y);
+        assert!(w.get(0, "vy").num() > 100., "va cayendo");
+        correr(&mut w, 3., &[]);
+        let c = por_obj(&w, "Caja");
+        assert!((c.y + c.h - 500.).abs() < 1.5, "reposa sobre el piso: abajo en {}", c.y + c.h);
+        assert!(w.get(0, "vy").num().abs() < 5. && c.angle.abs() < 1., "quieta y derecha");
+        assert_eq!(w.vars["toca"], Value::Num(1.));
+        assert!(w.profile.iter().any(|(l, _)| l == "Física"));
+        // Cambiar de escena rehace la física desde cero.
+        w.load_scene("S");
+        correr(&mut w, 0.1, &[]);
+        assert!(por_obj(&w, "Caja").y < 130.);
+    }
+
+    #[test]
+    fn fisica_rebote_impulso_y_teletransporte() {
+        // Rebote: con restitución 0.8 vuelve a subir después de tocar el piso.
+        let mut w = escena("", &format!(r#"{PISO_FISICO},
+            {{"name":"Pelota","type":"box","w":30,"h":30,"color":[0,0,0],"behaviors":[{{"type":"physics","shape":"circle","restitution":0.8}}]}}"#),
+            r#"{"obj":"Pelota","x":385,"y":200},{"obj":"Piso","x":0,"y":500}"#, "");
+        let mut lowest = (0f32, 0usize);
+        let mut subio = false;
+        for k in 0..180 {
+            correr(&mut w, 1. / 60., &[]);
+            let y = por_obj(&w, "Pelota").y;
+            if y > lowest.0 {
+                lowest = (y, k);
+            } else if lowest.0 > 440. && y < lowest.0 - 40. {
+                subio = true;
+            }
+        }
+        assert!(subio, "rebotó (más bajo {lowest:?})");
+
+        // Sin gravedad: un impulso lo mueve; set x lo teletransporta; set_velocity y vx; un cinemático sigue a los eventos.
+        let mut w = escena(r#","gravity":[0,0]"#, r#"{"name":"C","type":"box","w":50,"h":50,"color":[0,0,0],"behaviors":[{"type":"physics"}]},
+            {"name":"K","type":"box","w":20,"h":20,"color":[0,0,0],"behaviors":[{"type":"physics","body":"kinematic"}]}"#,
+            r#"{"obj":"C","x":100,"y":100},{"obj":"K","x":600,"y":100}"#,
+            r#"{"conds":[{"op":"key_down","args":["A"]}],"acts":[{"op":"apply_impulse","args":["C","100","0"]}]},
+               {"conds":[{"op":"key_down","args":["T"]}],"acts":[{"op":"set","args":["C","x","400"]}]},
+               {"conds":[{"op":"key_down","args":["V"]}],"acts":[{"op":"set_velocity","args":["C","0","-50"]},{"op":"set_angular_velocity","args":["C","90"]}]},
+               {"acts":[{"op":"add","args":["K","y","60 * dt"]}]}"#);
+        correr(&mut w, 0.1, &[]);
+        assert_eq!(por_obj(&w, "C").x, 100.);
+        correr(&mut w, 1. / 60., &["A"]);
+        correr(&mut w, 1., &[]);
+        // Masa 1 kg (50x50 px, densidad 1): el impulso 100 da 100 px/s.
+        assert!((w.get(0, "vx").num() - 100.).abs() < 1., "vx = {}", w.get(0, "vx").num());
+        let x = por_obj(&w, "C").x;
+        assert!((95.0..110.0).contains(&(x - 100.)), "avanzó {x}");
+        correr(&mut w, 1. / 60., &["T"]);
+        correr(&mut w, 1. / 60., &[]);
+        assert!((por_obj(&w, "C").x - 400.).abs() < 5., "teletransportado: {}", por_obj(&w, "C").x);
+        correr(&mut w, 1. / 60., &["V"]);
+        correr(&mut w, 0.5, &[]);
+        assert!((w.get(0, "vy").num() + 50.).abs() < 1. && (w.get(0, "angular_velocity").num() - 90.).abs() < 1.);
+        assert!(por_obj(&w, "C").angle > 30., "gira: {}", por_obj(&w, "C").angle);
+        assert!(por_obj(&w, "K").y > 180., "el cinemático sigue a los eventos: {}", por_obj(&w, "K").y);
+    }
+
+    #[test]
+    fn fisica_juntas_y_borrado() {
+        // Péndulo: una bisagra une la pesa a un clavo estático; la pesa cuelga y no se aleja del clavo.
+        let mut w = escena("", r#"{"name":"Clavo","type":"box","w":10,"h":10,"color":[0,0,0],"behaviors":[{"type":"physics","body":"static"}]},
+            {"name":"Pesa","type":"box","w":20,"h":20,"color":[0,0,0],"behaviors":[{"type":"physics"}]},
+            {"name":"Globo","type":"box","w":20,"h":20,"color":[0,0,0],"behaviors":[{"type":"physics","gravity_scale":0}]}"#,
+            r#"{"obj":"Clavo","x":395,"y":95},{"obj":"Pesa","x":490,"y":90},{"obj":"Globo","x":100,"y":100}"#,
+            r#"{"conds":[{"op":"start"}],"acts":[{"op":"joint_revolute","args":["Pesa","Clavo","400","100"]},{"op":"joint_distance","args":["Globo","Clavo",""]}]},
+               {"conds":[{"op":"key_down","args":["D"]}],"acts":[{"op":"delete","args":["Clavo"]}]}"#);
+        correr(&mut w, 2., &[]);
+        assert_eq!(w.fisica.juntas(), 2);
+        let p = por_obj(&w, "Pesa");
+        let d = (p.cx() - 400.).hypot(p.cy() - 100.);
+        assert!((d - 100.).abs() < 3., "a 100 px del clavo: {d}");
+        assert!(p.cy() > 120., "se balancea hacia abajo: {}", p.cy());
+        correr(&mut w, 1. / 60., &["D"]);
+        correr(&mut w, 1. / 60., &[]);
+        assert_eq!(w.fisica.juntas(), 0, "las juntas se van con el cuerpo");
+        assert!(!w.fisica.tiene(1));
+    }
+
+    #[test]
+    fn raycast_elige_el_primero() {
+        let mut w = escena("", r#"{"name":"Ojo","type":"box","w":10,"h":10,"color":[0,0,0]},
+            {"name":"Muro","type":"box","w":20,"h":100,"color":[0,0,0]}"#,
+            r#"{"obj":"Ojo","x":95,"y":95},{"obj":"Muro","x":300,"y":50},{"obj":"Muro","x":200,"y":50},{"obj":"Muro","x":400,"y":300}"#,
+            r#"{"conds":[{"op":"raycast","args":["Ojo","0","500","Muro"]}],"acts":[{"op":"set","args":["Muro","tocado","1"]},{"op":"set_var","args":["rx","ray_x"]}]},
+               {"conds":[{"op":"raycast","args":["Ojo","-90","500","Muro"],"not":true}],"acts":[{"op":"set_var","args":["arriba_libre","1"]}]},
+               {"conds":[{"op":"raycast","args":["Ojo","0","50","Muro"]}],"acts":[{"op":"set_var","args":["corto","1"]}]}"#);
+        w.step(1. / 60., Input::default());
+        let tocados: Vec<f32> = w.insts.iter().filter(|i| i.vars.contains_key("tocado")).map(|i| i.x).collect();
+        assert_eq!(tocados, vec![200.]); // el más cercano
+        assert_eq!(w.vars["rx"], Value::Num(200.));
+        assert_eq!(w.vars["arriba_libre"], Value::Num(1.));
+        assert!(!w.vars.contains_key("corto"), "el rayo corto no llega");
+        assert_eq!(ray_poly((0., 0.), (1., 0.), 100., &[(-1., -1.), (1., -1.), (1., 1.), (-1., 1.)]), Some(0.)); // empieza adentro
+    }
+
+    #[test]
+    fn pathfinder_rodea_la_pared() {
+        let mut w = escena("", r#"{"name":"Bicho","type":"box","w":20,"h":20,"color":[0,0,0],"behaviors":[{"type":"pathfinder","speed":300,"cell":16}]},
+            {"name":"Pared","type":"box","w":20,"h":600,"color":[0,0,0],"behaviors":[{"type":"obstacle"}]}"#,
+            r#"{"obj":"Bicho","x":90,"y":190},{"obj":"Pared","x":290,"y":-200}"#,
+            r#"{"conds":[{"op":"start"}],"acts":[{"op":"move_to","args":["Bicho","500","200"]}]},
+               {"conds":[{"op":"path_found","args":["Bicho"]}],"acts":[{"op":"set_var","args":["hay","1"]},{"op":"set_var","args":["largo","max(largo, Bicho.path_length)"]}]},
+               {"conds":[{"op":"path_done","args":["Bicho"]},{"op":"trigger_once"}],"acts":[{"op":"set_var","args":["llego","time"]}]}"#);
+        let mut max_y = 0f32;
+        let mut choco = false;
+        for _ in 0..(4. * 60.) as usize {
+            w.step(1. / 60., Input::default());
+            let b = por_obj(&w, "Bicho").clone();
+            max_y = max_y.max(b.cy());
+            choco |= sat(&b.hitbox(), &por_obj(&w, "Pared").hitbox()).is_some();
+        }
+        assert_eq!(w.vars["hay"], Value::Num(1.));
+        assert!(w.vars["largo"].num() > 550., "rodea: largo {}", w.vars["largo"].num());
+        assert!(max_y > 400., "pasó por debajo de la pared: {max_y}");
+        assert!(!choco, "no atraviesa la pared");
+        let b = por_obj(&w, "Bicho");
+        assert!((b.cx() - 500.).abs() < 0.01 && (b.cy() - 200.).abs() < 0.01, "llegó: {} {}", b.cx(), b.cy());
+        assert!(w.vars.contains_key("llego"));
+        assert_eq!((w.get(0, "speed").num(), w.get(0, "path_length").num()), (0., 0.));
+    }
+
+    #[test]
+    fn particulas_rafaga_vida_y_autodestruir() {
+        let mut w = escena("", r#"{"name":"Boom","type":"particles","burst":20,"rate":0,"life":[0.5,0.5],"speed":[100,100],"auto_destroy":true,
+                "color_start":[255,0,0],"color_end":[0,0,255],"alpha_start":255,"alpha_end":0,"size_start":10,"size_end":2},
+            {"name":"Humo","type":"particles","rate":10,"max":5,"life":[10,10],"gravity":[0,-100]}"#,
+            r#"{"obj":"Boom","x":100,"y":100,"layer":""},{"obj":"Humo","x":400,"y":400}"#,
+            r#"{"conds":[{"op":"key_down","args":["E"]}],"acts":[{"op":"set_emitting","args":["Humo","0"]},{"op":"emit_burst","args":["Humo","3"]}]}"#);
+        w.step(1. / 60., Input::default());
+        let boom: Vec<&Particle> = w.particles.iter().filter(|p| p.obj == "Boom").collect();
+        assert_eq!(boom.len(), 20, "ráfaga al crearse");
+        assert!(boom.iter().all(|p| (p.x, p.y) == (108., 108.) && p.layer.is_empty()), "salen del centro del emisor");
+        let p0 = boom[0].clone();
+        correr(&mut w, 0.25, &[]);
+        let p = w.particles.iter().find(|p| p.obj == "Boom").unwrap();
+        assert!((p.age - 0.25).abs() < 0.02 && (p.x - p0.x).hypot(p.y - p0.y) > 20., "envejecen y se mueven");
+        let def = match &w.object_def("Boom").unwrap().kind { Kind::Particles(d) => (**d).clone(), _ => unreachable!() };
+        let (rgb, alpha, size) = crate::particulas::particle_look(&def, &Particle { age: 0.25, life: 0.5, ..Default::default() });
+        assert_eq!((rgb, alpha, size), ([128, 0, 128], 127.5, 6.));
+        correr(&mut w, 0.4, &[]);
+        assert!(w.particles.iter().all(|p| p.obj != "Boom"), "mueren al cumplir su vida");
+        assert!(w.insts.iter().all(|i| i.obj != "Boom"), "el emisor se borró solo");
+        // El humo suelta 10 por segundo pero no más de 5 a la vez; la gravedad negativa lo sube.
+        assert_eq!(w.particles.len(), 5);
+        assert!(w.particles.iter().all(|p| p.y < 408.));
+        correr(&mut w, 1. / 60., &["E"]);
+        assert_eq!(w.get(0, "emitting"), Value::Num(0.));
+        assert_eq!(w.particles.len(), 5, "la ráfaga respeta el máximo");
+    }
+
+    #[test]
+    fn origen_y_mascara() {
+        // Sprite 40x20 con origen en (10, 10): x, y es ese punto y gira alrededor de él.
+        let sprite = |extra: &str| format!(r#"{{"name":"S","type":"sprite","w":40,"h":20,"animations":[{{"name":"a","frames":["a.png"]}}]{extra}}}"#);
+        let mut w = escena("", &format!(r#"{},{{"name":"B","type":"box","w":10,"h":10,"color":[0,0,0]}}"#, sprite(r#","origin":[10,10]"#)),
+            r#"{"obj":"S","x":100,"y":100},{"obj":"B","x":125,"y":95}"#,
+            r#"{"conds":[{"op":"collides","args":["S","B"]}],"acts":[{"op":"set_var","args":["toca","1"]}]}"#);
+        let s = w.insts[0].clone();
+        assert_eq!(s.origin, Some((0.25, 0.5)));
+        assert_eq!((s.cx(), s.cy()), (110., 100.));
+        assert_eq!(s.draw_rect(), (90., 90., 40., 20., 100., 100.));
+        w.step(1. / 60., Input::default());
+        assert_eq!(w.vars["toca"], Value::Num(1.)); // B (125..135) está dentro del sprite (90..130)
+        // Girado 90°: el sprite ahora va de y 90 a 130 alrededor del origen; ya no toca a B.
+        w.insts[0].angle = 90.;
+        let r = w.insts[0].hitbox();
+        let (x0, y0) = r.iter().fold((f32::MAX, f32::MAX), |a, p| (a.0.min(p.0), a.1.min(p.1)));
+        assert!((x0 - 90.).abs() < 1e-3 && (y0 - 90.).abs() < 1e-3, "{r:?}");
+        assert!((w.insts[0].cx() - 100.).abs() < 1e-3 && (w.insts[0].cy() - 110.).abs() < 1e-3);
+        w.vars.clear();
+        w.step(1. / 60., Input::default());
+        assert!(!w.vars.contains_key("toca"));
+        // Escala desde el origen: x, y no cambian.
+        w.put(0, "scale_x", Value::Num(2.));
+        assert_eq!((w.insts[0].x, w.insts[0].w), (100., 80.));
+        w.put(0, "cx", Value::Num(0.));
+        assert!(w.insts[0].cx().abs() < 1e-3);
+
+        // Máscara triangular en la mitad izquierda: B en la esquina de abajo a la derecha no toca.
+        let mut w = escena("", &format!(r#"{},{{"name":"B","type":"box","w":4,"h":4,"color":[0,0,0]}}"#, sprite(r#","mask":[[0,0],[20,0],[0,20]]"#)),
+            r#"{"obj":"S","x":0,"y":0},{"obj":"B","x":30,"y":14},{"obj":"B","x":2,"y":2}"#,
+            r#"{"conds":[{"op":"collides","args":["S","B"]}],"acts":[{"op":"set","args":["B","toca","1"]}]}"#);
+        w.step(1. / 60., Input::default());
+        assert_eq!((w.get(1, "toca"), w.get(2, "toca")), (Value::Num(0.), Value::Num(1.)));
+        assert_eq!(w.polys(0)[0].len(), 3);
+        // Sin origen ni máscara: igual que siempre.
+        let w = escena("", &sprite(""), r#"{"obj":"S","x":10,"y":10,"angle":30}"#, "");
+        let i = &w.insts[0];
+        assert_eq!((i.origin, i.mask.is_empty(), i.cx(), i.draw_rect()), (None, true, 30., (10., 10., 40., 20., 30., 20.)));
+        assert_eq!(i.mask_poly(), i.hitbox().to_vec());
+    }
+
+    #[test]
+    fn perfilador_mandos_efectos_y_texto() {
+        let mut w = with(r#"[{"conds":[{"op":"key_down","args":["Pad1A"]}],"acts":[{"op":"set_var","args":["eje","axis(\"Pad1LX\") + axis(\"Nada\")"]}]},
+            {"acts":[{"op":"set_effect","args":["A","flash","0.5"]},{"op":"set_effect","args":["B","outline",""]}]}]"#);
+        let mut inp = Input::default();
+        inp.down.insert("Pad1A".into());
+        inp.axes.insert("Pad1LX".into(), -0.5);
+        w.step(1. / 60., inp);
+        assert_eq!(w.vars["eje"], Value::Num(-0.5));
+        let labels: Vec<&str> = w.profile.iter().map(|p| p.0.as_str()).collect();
+        assert_eq!(labels, ["Evento 1: Tecla Pad1A presionada", "Evento 2: siempre", "Comportamientos"]);
+        assert_eq!((w.insts[0].effect.as_str(), w.insts[0].effect_amount), ("flash", 0.5));
+        assert_eq!((w.insts[2].effect.as_str(), w.insts[2].effect_amount), ("outline", 1.));
+        assert_eq!(w.project.version, FORMAT_VERSION, "World::new migra el proyecto");
+        // Texto en líneas: cada letra mide 10 px.
+        let m = |s: &str| s.chars().count() as f32 * 10.;
+        assert_eq!(wrap_lines("hola que tal\nchau", 20., 75., m), ["hola", "que tal", "chau"]);
+        assert_eq!(wrap_lines("abcdefghij", 20., 40., m), ["abcd", "efgh", "ij"]);
+        assert_eq!(wrap_lines("una sola", 20., 0., m), ["una sola"]);
+        assert_eq!(crate::catalog::key_label("Pad1A"), "Mando: A");
+        assert_eq!(crate::catalog::key_label("Pad2Up"), "Mando 2: cruceta arriba");
     }
 }

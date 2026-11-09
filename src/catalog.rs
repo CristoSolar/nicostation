@@ -76,6 +76,9 @@ pub const CATALOG: &[Meta] = &[
     m!(true, "grabbing", "Movimiento", "Agarrado a un borde", "_0_ está agarrado a un borde", ["Objeto": Object]),
     m!(true, "tweening", "Movimiento", "Moviéndose suave", "_0_ está en un movimiento suave", ["Objeto": Object]),
     m!(true, "is_moving", "Movimiento", "Moviéndose", "_0_ se está moviendo", ["Objeto": Object]),
+    m!(true, "path_found", "Movimiento", "Encontró camino", "_0_ encontró un camino", ["Objeto": Object]),
+    m!(true, "path_done", "Movimiento", "Llegó al destino", "_0_ llegó al final de su camino", ["Objeto": Object]),
+    m!(true, "raycast", "Objetos", "Rayo toca", "Un rayo desde _0_ hacia _1_° de _2_ px toca a _3_", ["Desde": Object, "Ángulo": Expr, "Distancia": Expr, "Objeto a tocar": Object]),
     m!(true, "alarm", "Tiempo", "Alarma", "Sonó la alarma «_1_» de _0_", ["Objeto": Object, "Nombre": Text]),
     m!(true, "compare", "Variables", "Comparar dos valores", "_0_ _1_ _2_", ["Valor": Expr, "Comparación": Op, "Otro valor": Expr]),
     m!(true, "script_if", "Funciones", "Condición en código", "Código: _0_", ["Código Rhai": Code]),
@@ -90,12 +93,25 @@ pub const CATALOG: &[Meta] = &[
     m!(false, "flip_x", "Objetos", "Voltear horizontal", "Voltear _0_: _1_", ["Objeto": Object, "Sí (1) / No (0)": Expr]),
     m!(false, "look_at", "Objetos", "Mirar hacia", "Girar _0_ hacia (_1_, _2_)", ["Objeto": Object, "X": Expr, "Y": Expr]),
     m!(false, "separate", "Objetos", "Separar de", "Sacar a _0_ de encima de _1_", ["Objeto": Object, "Obstáculo": Object]),
+    m!(false, "emit_burst", "Objetos", "Ráfaga de partículas", "_0_ suelta _1_ partículas de golpe", ["Emisor": Object, "Cantidad": Expr]),
+    m!(false, "set_emitting", "Objetos", "Encender partículas", "_0_ suelta partículas: _1_", ["Emisor": Object, "Sí (1) / No (0)": Expr]),
+    m!(false, "set_effect", "Objetos", "Poner efecto", "Efecto de _0_ = _1_ (intensidad _2_)", ["Objeto": Object, "Efecto (none, flash, outline, grayscale, wave)": Text, "Intensidad 0 a 1 (opcional)": Expr]),
     m!(false, "set_tile", "Objetos", "Cambiar baldosa", "Poner la baldosa _3_ en la columna _1_, fila _2_ de _0_", ["Mapa": Object, "Columna": Expr, "Fila": Expr, "Baldosa (-1 = vacía)": Expr]),
     m!(false, "tween", "Movimiento", "Cambio suave", "Llevar _1_ de _0_ a _2_ en _3_ s (curva _4_)", ["Objeto": Object, "Propiedad": Prop, "Valor final": Expr, "Segundos": Expr, "Curva": Ease]),
     m!(false, "move_forward", "3D", "Avanzar", "Mover _0_ hacia adelante _1_ metros", ["Objeto": Object, "Metros": Expr]),
     m!(false, "move_right", "3D", "Moverse de costado", "Mover _0_ hacia la derecha _1_ metros", ["Objeto": Object, "Metros": Expr]),
     m!(false, "look_at3", "3D", "Mirar hacia (3D)", "Girar _0_ para que mire a (_1_, _2_, _3_)", ["Objeto": Object, "X": Expr, "Y": Expr, "Z": Expr]),
     m!(false, "jump", "Movimiento", "Saltar", "Hacer saltar a _0_", ["Objeto": Object]),
+    m!(false, "move_to", "Movimiento", "Ir hasta (esquivando)", "Llevar a _0_ hasta (_1_, _2_) esquivando obstáculos", ["Objeto": Object, "X": Expr, "Y": Expr]),
+    m!(false, "stop_path", "Movimiento", "Dejar de caminar", "_0_ deja de seguir su camino", ["Objeto": Object]),
+    m!(false, "apply_force", "Movimiento", "Empujar (fuerza)", "Empujar a _0_ con fuerza (_1_, _2_)", ["Objeto": Object, "Fuerza X": Expr, "Fuerza Y": Expr]),
+    m!(false, "apply_impulse", "Movimiento", "Golpe (impulso)", "Dar un golpe a _0_ de (_1_, _2_)", ["Objeto": Object, "Impulso X": Expr, "Impulso Y": Expr]),
+    m!(false, "set_velocity", "Movimiento", "Cambiar velocidad", "Velocidad de _0_ = (_1_, _2_) px/s", ["Objeto": Object, "Velocidad X": Expr, "Velocidad Y": Expr]),
+    m!(false, "apply_torque", "Movimiento", "Hacer girar (fuerza)", "Hacer girar a _0_ con fuerza _1_", ["Objeto": Object, "Fuerza de giro": Expr]),
+    m!(false, "set_angular_velocity", "Movimiento", "Velocidad de giro", "Velocidad de giro de _0_ = _1_ grados/s", ["Objeto": Object, "Grados por segundo": Expr]),
+    m!(false, "joint_distance", "Movimiento", "Atar con cuerda", "Atar _0_ a _1_ con una cuerda de _2_ px", ["Objeto": Object, "Otro": Object, "Largo px (opcional)": Expr]),
+    m!(false, "joint_revolute", "Movimiento", "Unir con bisagra", "Unir _0_ con _1_ con una bisagra en (_2_, _3_)", ["Objeto": Object, "Otro": Object, "X": Expr, "Y": Expr]),
+    m!(false, "remove_joints", "Movimiento", "Soltar uniones", "Soltar las cuerdas y bisagras de _0_", ["Objeto": Object]),
     m!(false, "set_var", "Variables", "Variable de escena", "Variable _0_ = _1_", ["Variable": Var, "Valor": Expr]),
     m!(false, "add_var", "Variables", "Sumar a variable", "Sumar _1_ a la variable _0_", ["Variable": Var, "Valor": Expr]),
     m!(false, "list_add", "Variables", "Agregar a lista", "Agregar _1_ al final de la lista _0_", ["Lista": Var, "Valor": Expr]),
@@ -137,9 +153,14 @@ pub const KEYS: &[&str] = &[
     "LeftControl", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P",
     "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "Key0", "Key1", "Key2", "Key3", "Key4",
     "Key5", "Key6", "Key7", "Key8", "Key9",
+    // Botones de mandos (llegan como teclas). Los ejes se leen con axis("Pad1LX").
+    "Pad1A", "Pad1B", "Pad1X", "Pad1Y", "Pad1Start", "Pad1Select", "Pad1L", "Pad1R", "Pad1Up", "Pad1Down", "Pad1Left", "Pad1Right",
+    "Pad2A", "Pad2B", "Pad2X", "Pad2Y", "Pad2Start", "Pad2Select", "Pad2L", "Pad2R", "Pad2Up", "Pad2Down", "Pad2Left", "Pad2Right",
 ];
+/// Ejes de mandos para axis(...): de -1 a 1 (LT/RT de 0 a 1).
+pub const AXES: &[&str] = &["Pad1LX", "Pad1LY", "Pad1RX", "Pad1RY", "Pad1LT", "Pad1RT", "Pad2LX", "Pad2LY", "Pad2RX", "Pad2RY", "Pad2LT", "Pad2RT"];
 /// Propiedades de objeto conocidas (además, cualquier otro nombre es una variable del objeto).
-pub const PROPS: &[&str] = &["x", "y", "cx", "cy", "w", "h", "angle", "opacity", "z", "speed", "visible", "scale_x", "scale_y", "tint", "effect", "effect_amount", "d", "pitch", "roll", "scale_z"];
+pub const PROPS: &[&str] = &["x", "y", "cx", "cy", "w", "h", "angle", "opacity", "z", "speed", "visible", "scale_x", "scale_y", "tint", "effect", "effect_amount", "d", "pitch", "roll", "scale_z", "vx", "vy", "angular_velocity", "emitting", "path_length"];
 pub const EFFECTS: &[&str] = &["none", "flash", "outline", "grayscale", "wave"];
 
 /// Parámetro opcional: su nombre lo dice («(opcional)»). Va siempre al final; vacío = valor por defecto.
@@ -257,6 +278,22 @@ pub fn kid(op: &str) -> Kid {
         "call" => ("Usa un bloque que inventaste en «Mis bloques».", true),
         "return" => ("Dentro de un bloque-pregunta de «Mis bloques»: responde sí (1) o no (0).", false),
         "quit" => ("Cierra el juego.", false),
+        "path_found" => ("Se cumple si el objeto encontró por dónde ir hasta el lugar que le pediste con «ir hasta».", false),
+        "path_done" => ("Se cumple cuando el objeto llegó al lugar que le pediste con «ir hasta».", true),
+        "raycast" => ("Tira una línea invisible desde un objeto, como un láser, y se cumple si toca al otro objeto. Elige el primero que toca. Dónde tocó: ray_x y ray_y. Ángulo: 0 = derecha, 90 = abajo.", false),
+        "move_to" => ("El objeto camina solo hasta ese lugar, esquivando las paredes (los objetos con el comportamiento «obstáculo»). Necesita el comportamiento «buscar caminos».", true),
+        "stop_path" => ("El objeto se queda quieto y deja de ir hacia donde iba.", false),
+        "apply_force" => ("Empuja un objeto con física, como el viento o un cohete. Hay que empujar en cada momento (sin condición o con «tecla presionada»). Y negativa = hacia arriba.", false),
+        "apply_impulse" => ("Le da un golpe de una vez a un objeto con física, como patear una pelota. Ejemplo: impulso Y -500 lo hace saltar.", true),
+        "set_velocity" => ("Pone la velocidad de un objeto con física (o que se mueve solo) en píxeles por segundo. Y negativa = hacia arriba.", false),
+        "apply_torque" => ("Hace girar un objeto con física, como darle vueltas a una rueda.", false),
+        "set_angular_velocity" => ("Pone qué tan rápido gira un objeto con física, en grados por segundo.", false),
+        "joint_distance" => ("Ata dos objetos con física con una cuerda: no se pueden alejar más que el largo. Sin largo, usa la distancia que tienen ahora.", false),
+        "joint_revolute" => ("Une dos objetos con física con un clavo en un punto: pueden girar alrededor de él, como una puerta o un péndulo.", false),
+        "remove_joints" => ("Corta las cuerdas y bisagras de un objeto.", false),
+        "emit_burst" => ("Hace que un emisor de partículas suelte muchas de golpe, como una explosión o confeti.", true),
+        "set_emitting" => ("Prende (1) o apaga (0) un emisor de partículas, como abrir o cerrar una canilla de humo.", false),
+        "set_effect" => ("Le pone un efecto al dibujo: «flash» lo pone blanco (cuando lo golpean), «outline» le dibuja un borde, «grayscale» lo pone gris, «wave» lo hace ondular, «none» lo saca.", true),
         _ => ("", false),
     };
     Kid { help, basic }
@@ -289,6 +326,19 @@ pub fn key_label(k: &str) -> String {
         "Backspace" => "Borrar".into(),
         "LeftShift" => "Shift".into(),
         "LeftControl" => "Ctrl".into(),
+        _ if k.starts_with("Pad") && k.len() > 4 => {
+            let (n, b) = k[3..].split_at(1);
+            let b = match b {
+                "Up" => "cruceta arriba",
+                "Down" => "cruceta abajo",
+                "Left" => "cruceta izquierda",
+                "Right" => "cruceta derecha",
+                "L" => "gatillo izquierdo (L)",
+                "R" => "gatillo derecho (R)",
+                b => b,
+            };
+            if n == "1" { format!("Mando: {b}") } else { format!("Mando {n}: {b}") }
+        }
         _ => k.strip_prefix("Key").unwrap_or(k).into(),
     }
 }
@@ -316,6 +366,11 @@ pub fn prop_label(p: &str) -> String {
         "scale_x" => "tamaño a lo ancho (1 normal, 2 el doble)".into(),
         "scale_y" => "tamaño a lo alto (1 normal, 2 el doble)".into(),
         "tint" => "color (\"rojo\", \"#ff0000\"...)".into(),
+        "vx" => "velocidad hacia la derecha (px/s)".into(),
+        "vy" => "velocidad hacia abajo (px/s)".into(),
+        "angular_velocity" => "velocidad de giro (grados/s)".into(),
+        "emitting" => "suelta partículas (1 sí, 0 no)".into(),
+        "path_length" => "cuánto le falta del camino (px)".into(),
         _ => format!("variable «{p}» del objeto"),
     }
 }
