@@ -1,3 +1,5 @@
+// En Windows, sin ventana de consola detrás del juego (solo en la versión final).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 //! Reproductor: `nicostation proyecto.json`. Ventana, imágenes, sonido y entrada con macroquad.
 //! También compila a WebAssembly: en el navegador lee `juego.json` junto a la página.
 //! Exportar a web: `nicostation --export-web proyecto.json carpeta/`.

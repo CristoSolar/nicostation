@@ -43,7 +43,8 @@ GameMaker, sin perder el modo fácil para niños. Cada fase deja todo compilando
 
 ## Fase E: publicar
 - [x] Exportar a Android (APK firmada de depuración; falta probar en un teléfono).
-- [ ] Exportar a Windows (código listo, falta instalar mingw) y macOS; publicación a itch.io.
+- [x] Exportar a Windows: un solo .exe sin consola ni DLL externas (falta probarlo en un Windows real).
+- [ ] Exportar a macOS; publicación a itch.io.
 - [ ] Manual de usuario y referencia de cada bloque.
 
 ## Fase F: 3D (ver docs/godot-3d.md y docs/tecnologia-3d.md)
