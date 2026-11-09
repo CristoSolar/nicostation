@@ -18,6 +18,10 @@ pub enum Expr {
     /// Comparación: "==", "!=", "<", ">", "<=", ">=".
     Cmp(&'static str, Box<Expr>, Box<Expr>),
     And(Box<Expr>, Box<Expr>),
+    /// `[a, b, c]`
+    List(Vec<Expr>),
+    /// `lista[0]`, `estructura["campo"]`
+    Index(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Not(Box<Expr>),
 }
@@ -49,6 +53,8 @@ pub fn eval(e: &Expr, c: &dyn Ctx) -> Value {
         Expr::Prop(o, p) => c.prop(o, p),
         Expr::Neg(a) => Value::Num(-eval(a, c).num()),
         Expr::Not(a) => bool_v(!eval(a, c).truthy()),
+        Expr::List(l) => Value::List(l.iter().map(|e| eval(e, c)).collect()),
+        Expr::Index(a, k) => eval(a, c).at(&eval(k, c)),
         Expr::And(a, b) => bool_v(eval(a, c).truthy() && eval(b, c).truthy()),
         Expr::Or(a, b) => bool_v(eval(a, c).truthy() || eval(b, c).truthy()),
         Expr::Cmp(op, a, b) => {
@@ -112,6 +118,20 @@ pub fn eval(e: &Expr, c: &dyn Ctx) -> Value {
                 "contains" => bool_v(s(0).contains(&s(1))),
                 "replace" => Value::Str(s(0).replace(&s(1), &s(2))),
                 "fixed" => Value::Str(format!("{:.*}", n(1).clamp(0., 10.) as usize, n(0))),
+                "size" => Value::Num(match args.first().map(|a| eval(a, c)) {
+                    Some(Value::Str(t)) => t.chars().count() as f64,
+                    Some(v) => v.num(),
+                    None => 0.,
+                }),
+                "has" => {
+                    let (v, k) = (args.first().map(|a| eval(a, c)), args.get(1).map(|a| eval(a, c)).unwrap_or(Value::Num(0.)));
+                    bool_v(match v {
+                        Some(Value::List(l)) => l.contains(&k),
+                        Some(Value::Map(m)) => m.contains_key(&k.text()),
+                        Some(Value::Str(t)) => t.contains(&k.text()),
+                        _ => false,
+                    })
+                }
                 "pad" => Value::Str(format!("{:0>w$}", s(0), w = n(1).clamp(0., 32.) as usize)),
                 "angle" => Value::Num((n(3) - n(1)).atan2(n(2) - n(0)).to_degrees()),
                 "distance" => Value::Num((n(2) - n(0)).hypot(n(3) - n(1))),
@@ -211,10 +231,17 @@ impl Parser<'_> {
     }
     fn unary(&mut self) -> Result<Expr, String> {
         if self.eat(b'-') {
-            Ok(Expr::Neg(Box::new(self.unary()?)))
-        } else {
-            self.atom()
+            return Ok(Expr::Neg(Box::new(self.unary()?)));
         }
+        let mut e = self.atom()?;
+        while self.eat(b'[') {
+            let k = self.or()?;
+            if !self.eat(b']') {
+                return Err("falta «]»".into());
+            }
+            e = Expr::Index(Box::new(e), Box::new(k));
+        }
+        Ok(e)
     }
     fn ident(&mut self) -> String {
         self.ws();
@@ -228,6 +255,21 @@ impl Parser<'_> {
         if self.eat(b'(') {
             let e = self.or()?;
             return if self.eat(b')') { Ok(e) } else { Err("falta «)»".into()) };
+        }
+        if self.eat(b'[') {
+            let mut items = vec![];
+            if !self.eat(b']') {
+                loop {
+                    items.push(self.or()?);
+                    if self.eat(b']') {
+                        break;
+                    }
+                    if !self.eat(b',') {
+                        return Err("falta «,» o «]» en la lista".into());
+                    }
+                }
+            }
+            return Ok(Expr::List(items));
         }
         if self.eat(b'"') {
             let st = self.i;
@@ -324,6 +366,10 @@ mod tests {
         assert_eq!(ev("fixed(3.14159, 2) + \" \" + pad(7, 3)"), Value::Str("3.14 007".into()));
         assert_eq!(ev("contains(\"banana\", \"nan\") + sign(-4)"), Value::Num(0.));
         assert_eq!(ev("android"), Value::Str("android".into())); // «and» solo como palabra completa
+        assert_eq!(ev("[1, 2, 3][1] + size([4, 5])"), Value::Num(4.));
+        assert_eq!(ev("has([\"a\", \"b\"], \"b\") and not has([1], 2)"), Value::Num(1.));
+        assert_eq!(ev("[[1, 2], [3]][0][1]"), Value::Num(2.));
+        assert!(parse("[1, 2").is_err());
         assert!(parse("1 +").is_err());
         assert!(parse("f(1 2)").is_err());
         assert!(parse("\"abierta").is_err());

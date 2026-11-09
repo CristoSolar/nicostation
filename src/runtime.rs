@@ -938,6 +938,44 @@ impl World {
                 let old = scope.get(a(0)).cloned().unwrap_or(Value::Num(0.));
                 scope.insert(a(0).into(), if c.op.starts_with("add") { add(&old, &v) } else { v });
             }
+            "list_add" | "list_set" | "list_remove" | "list_clear" => {
+                let (v, k) = (self.ev(a(1), sol, None), self.ev(a(2), sol, None));
+                let name = a(0).to_string();
+                let global = !self.vars.contains_key(&name) && self.globals.contains_key(&name);
+                let scope = if global { &mut self.globals } else { &mut self.vars };
+                // Una cajita nueva es estructura si se le pone un campo con nombre, lista si no.
+                let fresh = if c.op == "list_set" && matches!(v, Value::Str(_)) { Value::Map(Default::default()) } else { Value::List(vec![]) };
+                let cur = scope.entry(name).or_insert(fresh);
+                match (c.op.as_str(), cur) {
+                    ("list_add", Value::List(l)) => l.push(v),
+                    // list_set(var, índice o campo, valor)
+                    ("list_set", Value::List(l)) => {
+                        let i = v.num().max(0.) as usize;
+                        if i >= l.len() {
+                            l.resize(i + 1, Value::Num(0.));
+                        }
+                        l[i] = k;
+                    }
+                    ("list_set", Value::Map(m)) => drop(m.insert(v.text(), k)),
+                    ("list_remove", Value::List(l)) => {
+                        let i = v.num() as usize;
+                        if v.num() >= 0. && i < l.len() {
+                            l.remove(i);
+                        }
+                    }
+                    ("list_remove", Value::Map(m)) => drop(m.remove(&v.text())),
+                    ("list_clear", Value::List(l)) => l.clear(),
+                    ("list_clear", Value::Map(m)) => m.clear(),
+                    // Una cajita que no era colección pasa a serlo.
+                    ("list_set", other) if !matches!(v, Value::Num(_)) => *other = Value::Map([(v.text(), k)].into()),
+                    (op, other) => {
+                        *other = Value::List(vec![]);
+                        if op == "list_add" {
+                            *other = Value::List(vec![v]);
+                        }
+                    }
+                }
+            }
             "reset_timer" => {
                 self.timers.insert(a(0).into(), self.time);
             }
@@ -2142,6 +2180,20 @@ mod tests {
         // La cámara mira al jugador: hacia -Z (ángulo 0) y hacia abajo.
         let cam = &w.insts[3];
         assert!(cam.angle.abs() < 1. && cam.pitch < -5., "cámara {} {}", cam.angle, cam.pitch);
+    }
+
+    #[test]
+    fn listas_y_estructuras() {
+        let mut w = with(r#"[{"conds":[{"op":"start"}],"acts":[
+            {"op":"list_add","args":["inv","\"espada\""]},{"op":"list_add","args":["inv","\"poción\""]},
+            {"op":"list_remove","args":["inv","0"]},{"op":"list_set","args":["jug","\"vida\"","3"]},
+            {"op":"set_var","args":["n","size(inv) + jug[\"vida\"]"]},{"op":"set_var","args":["t","inv[0]"]}]}]"#);
+        w.step(0.016, Input::default());
+        assert_eq!(w.vars["inv"], Value::List(vec![Value::Str("poción".into())]));
+        assert_eq!(w.vars["n"], Value::Num(4.));
+        assert_eq!(w.vars["t"], Value::Str("poción".into()));
+        let j: Value = serde_json::from_str(r#"{"vida": 3}"#).unwrap();
+        assert_eq!(w.vars["jug"], j);
     }
 
     #[test]

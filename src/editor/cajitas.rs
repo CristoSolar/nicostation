@@ -98,6 +98,8 @@ pub enum Tipo {
     Num,
     Txt,
     SiNo,
+    Lista,
+    Estructura,
 }
 
 pub fn tipo(v: &Value) -> Tipo {
@@ -105,6 +107,8 @@ pub fn tipo(v: &Value) -> Tipo {
         Value::Num(_) => Tipo::Num,
         Value::Str(_) => Tipo::Txt,
         Value::Bool(_) => Tipo::SiNo,
+        Value::List(_) => Tipo::Lista,
+        Value::Map(_) => Tipo::Estructura,
     }
 }
 
@@ -116,6 +120,16 @@ fn convertir(v: &Value, t: Tipo) -> Value {
             _ => v.text(),
         }),
         Tipo::SiNo => Value::Bool(v.truthy()),
+        Tipo::Lista => match v {
+            Value::List(_) => v.clone(),
+            Value::Map(m) => Value::List(m.values().cloned().collect()),
+            _ => Value::List(vec![v.clone()]),
+        },
+        Tipo::Estructura => match v {
+            Value::Map(_) => v.clone(),
+            Value::List(l) => Value::Map(l.iter().enumerate().map(|(k, x)| (k.to_string(), x.clone())).collect()),
+            _ => Value::Map([("valor".to_string(), v.clone())].into()),
+        },
     }
 }
 
@@ -124,10 +138,12 @@ fn tipo_icon(t: Tipo) -> &'static str {
         Tipo::Num => ic::HASH,
         Tipo::Txt => ic::TEXT_T,
         Tipo::SiNo => ic::TOGGLE_RIGHT,
+        Tipo::Lista => ic::LIST,
+        Tipo::Estructura => ic::BRACES,
     }
 }
 
-const TIPOS: [(Tipo, &str); 3] = [(Tipo::Num, "Número"), (Tipo::Txt, "Texto"), (Tipo::SiNo, "Sí / no")];
+const TIPOS: [(Tipo, &str); 5] = [(Tipo::Num, "Número"), (Tipo::Txt, "Texto"), (Tipo::SiNo, "Sí / no"), (Tipo::Lista, "Lista"), (Tipo::Estructura, "Estructura")];
 
 /// Editor del valor según su tipo.
 fn valor(ui: &mut Ui, v: &mut Value) {
@@ -142,6 +158,18 @@ fn valor(ui: &mut Ui, v: &mut Value) {
             }
         }
         Value::Str(s) => drop(ui.add(TextEdit::singleline(s).desired_width(180.).font(FontId::proportional(15.)).hint_text("texto"))),
+        // ponytail: listas y estructuras se editan como JSON; editor visual pendiente.
+        Value::List(_) | Value::Map(_) => {
+            let id = ui.make_persistent_id("json");
+            let mut buf: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_else(|| serde_json::to_string(v).unwrap_or_default());
+            let r = ui.add(TextEdit::singleline(&mut buf).desired_width(220.).font(FontId::monospace(13.)).hint_text("[1, 2, 3] o {\"vida\": 3}"));
+            match serde_json::from_str::<Value>(&buf) {
+                Ok(nv @ (Value::List(_) | Value::Map(_))) if r.changed() => *v = nv,
+                Err(_) if r.has_focus() => drop(ui.label(RichText::new(ic::WARNING).color(DANGER)).on_hover_text("JSON inválido")),
+                _ => {}
+            }
+            ui.data_mut(|d| d.insert_temp(id, buf));
+        }
         Value::Bool(b) => {
             let (icon, t, c) = if *b { (ic::TOGGLE_RIGHT, "sí", OK) } else { (ic::TOGGLE_LEFT, "no", TEXT_MUTED) };
             if ui.add(Button::new((RichText::new(icon).size(26.).color(c), RichText::new(t).font(sb(15.)))).frame_when_inactive(false).min_size(Vec2::new(0., 32.))).clicked() {
@@ -278,6 +306,8 @@ fn formulario(ui: &mut Ui, n: &mut Nueva, taken: &dyn Fn(&str) -> bool) -> (Opti
                             Tipo::Num => "0".into(),
                             Tipo::Txt => String::new(),
                             Tipo::SiNo => "no".into(),
+                            Tipo::Lista => "[]".into(),
+                            Tipo::Estructura => "{}".into(),
                         };
                     }
                 }
@@ -323,6 +353,8 @@ fn formulario(ui: &mut Ui, n: &mut Nueva, taken: &dyn Fn(&str) -> bool) -> (Opti
                     Tipo::Num => Value::Num(n.valor.trim().parse().unwrap_or(0.)),
                     Tipo::Txt => Value::Str(n.valor.clone()),
                     Tipo::SiNo => Value::Bool(n.valor == "sí"),
+                    Tipo::Lista => serde_json::from_str(&n.valor).ok().filter(|v| matches!(v, Value::List(_))).unwrap_or(Value::List(vec![])),
+                    Tipo::Estructura => serde_json::from_str(&n.valor).ok().filter(|v| matches!(v, Value::Map(_))).unwrap_or(Value::Map(Default::default())),
                 };
                 crear = Some((nm.to_string(), v));
             }

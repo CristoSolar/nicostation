@@ -12,6 +12,10 @@ pub enum Value {
     Bool(bool),
     Num(f64),
     Str(String),
+    /// Lista (inventario, puntajes...). En JSON, un arreglo.
+    List(Vec<Value>),
+    /// Estructura con campos (en JSON, un objeto).
+    Map(BTreeMap<String, Value>),
 }
 
 impl Value {
@@ -20,6 +24,9 @@ impl Value {
             Value::Num(n) => *n,
             Value::Bool(b) => *b as i32 as f64,
             Value::Str(s) => s.trim().parse().unwrap_or(0.),
+            // Una colección como número vale su cantidad de elementos.
+            Value::List(l) => l.len() as f64,
+            Value::Map(m) => m.len() as f64,
         }
     }
     pub fn text(&self) -> String {
@@ -28,6 +35,8 @@ impl Value {
             Value::Num(n) => format!("{n}"),
             Value::Bool(b) => b.to_string(),
             Value::Str(s) => s.clone(),
+            Value::List(l) => format!("[{}]", l.iter().map(Value::text).collect::<Vec<_>>().join(", ")),
+            Value::Map(m) => format!("{{{}}}", m.iter().map(|(k, v)| format!("{k}: {}", v.text())).collect::<Vec<_>>().join(", ")),
         }
     }
     pub fn truthy(&self) -> bool {
@@ -35,7 +44,18 @@ impl Value {
             Value::Num(n) => *n != 0.,
             Value::Bool(b) => *b,
             Value::Str(s) => !matches!(s.as_str(), "" | "0" | "false"),
+            Value::List(l) => !l.is_empty(),
+            Value::Map(m) => !m.is_empty(),
         }
+    }
+    /// Elemento de una lista (por número, desde 0) o campo de una estructura (por nombre).
+    pub fn at(&self, k: &Value) -> Value {
+        match self {
+            Value::List(l) => l.get(k.num().max(0.) as usize).cloned(),
+            Value::Map(m) => m.get(&k.text()).cloned(),
+            _ => None,
+        }
+        .unwrap_or(Value::Num(0.))
     }
 }
 

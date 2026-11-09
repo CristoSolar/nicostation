@@ -27,10 +27,18 @@ fn to_dyn(v: Value) -> Dynamic {
         Value::Num(n) => Dynamic::from_float(n),
         Value::Str(s) => s.into(),
         Value::Bool(b) => b.into(),
+        Value::List(l) => l.into_iter().map(to_dyn).collect::<Array>().into(),
+        Value::Map(m) => m.into_iter().map(|(k, v)| (k.into(), to_dyn(v))).collect::<rhai::Map>().into(),
     }
 }
 
 fn from_dyn(d: &Dynamic) -> Value {
+    if let Some(a) = d.read_lock::<Array>() {
+        return Value::List(a.iter().map(from_dyn).collect());
+    }
+    if let Some(m) = d.read_lock::<rhai::Map>() {
+        return Value::Map(m.iter().map(|(k, v)| (k.to_string(), from_dyn(v))).collect());
+    }
     if let Some(b) = d.clone().try_cast::<bool>() {
         Value::Bool(b)
     } else if let Ok(f) = d.as_float() {
