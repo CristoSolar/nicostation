@@ -66,9 +66,17 @@ pub fn write(file: &std::path::Path, v: &Vars) -> std::io::Result<()> {
     std::fs::rename(&tmp, file)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn native_file(game: &str) -> Option<std::path::PathBuf> {
     data_dir(|k| std::env::var(k).ok()).map(|d| save_file(&d, game))
+}
+
+/// Android: carpeta privada de la app, /data/data/<paquete>/files (el paquete sale de /proc/self/cmdline).
+#[cfg(target_os = "android")]
+fn native_file(game: &str) -> Option<std::path::PathBuf> {
+    let cmd = std::fs::read("/proc/self/cmdline").ok()?;
+    let pkg = String::from_utf8_lossy(cmd.split(|b| *b == 0).next()?).split(':').next()?.to_string();
+    Some(save_file(&std::path::Path::new("/data/data").join(pkg).join("files"), game))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

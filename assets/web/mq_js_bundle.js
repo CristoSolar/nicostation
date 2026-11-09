@@ -9,3 +9,10 @@ o.env.nicostation_storage_get=function(kp,kl){pend=new Uint8Array(0);try{var v=w
 o.env.nicostation_storage_take=function(p){new Uint8Array(wasm_memory.buffer,p,pend.length).set(pend);pend=new Uint8Array(0)};
 o.env.nicostation_storage_set=function(kp,kl,vp,vl){try{window.localStorage.setItem(str(kp,kl),str(vp,vl))}catch(e){console.warn("no se pudo guardar la partida",e)}}
 }});
+// NicoStation: mandos con navigator.getGamepads() (agregado; ver assets/web/README.md).
+miniquad_add_plugin({name:"nicostation_gamepad",version:1,register_plugin:function(o){
+o.env.nicostation_pad_read=function(pad,out){var l=[];try{var g=navigator.getGamepads?navigator.getGamepads():[];for(var i=0;i<g.length;i++)if(g[i]&&g[i].connected)l.push(g[i])}catch(e){return 0}
+var p=l[pad];if(!p)return 0;var f=new Float32Array(wasm_memory.buffer,out,21);f.fill(0);
+for(var b=0;b<17&&b<p.buttons.length;b++){var x=p.buttons[b];f[b]=typeof x=="object"?(x.value||(x.pressed?1:0)):x}
+for(var a=0;a<4&&a<p.axes.length;a++)f[17+a]=p.axes[a]||0;return 1}
+}});

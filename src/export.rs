@@ -2,6 +2,7 @@
 //! - Web (`export_web`): copia el reproductor WebAssembly, la página y los archivos del juego a una carpeta.
 //!   El mismo `nicostation.wasm` sirve para cualquier juego: al arrancar lee `juego.json`.
 //! - Escritorio (`export_desktop`): un solo ejecutable con todo adentro (ver `pack.rs`).
+//! - Android (`export_android`): el APK plantilla del reproductor con el juego en `assets/`, alineado y firmado.
 
 use crate::model::{Event, Instr, Kind, Project};
 use std::collections::BTreeSet;
@@ -50,9 +51,15 @@ pub fn assets(p: &Project) -> BTreeSet<String> {
                 out.insert(tileset.clone());
             }
             Kind::Mesh { model, texture, .. } => out.extend([model, texture].into_iter().filter(|f| !f.is_empty()).cloned()),
+            Kind::Background { image, .. } => {
+                out.insert(image.clone());
+            }
+            Kind::Particles(def) => out.extend([def.image.clone()].into_iter().filter(|f| !f.is_empty())),
+            Kind::Text { font, .. } => out.extend([font.clone()].into_iter().filter(|f| !f.is_empty())),
             _ => {}
         }
     }
+    out.extend([&p.settings.icon, &p.settings.loading_image].into_iter().filter(|f| !f.is_empty()).cloned());
     for s in &p.scenes {
         events(&s.events, &mut out);
         if let Some(img) = s.environment.as_ref().map(|e| &e.sky_image).filter(|i| !i.is_empty()) {
@@ -78,7 +85,7 @@ pub fn check_rel(a: &str) -> Result<(), String> {
 /// Exporta el proyecto a `out`. Devuelve los archivos escritos.
 pub fn export_web(project_file: &Path, out: &Path) -> Result<Vec<String>, String> {
     let src = std::fs::read_to_string(project_file).map_err(|e| format!("no pude leer {}: {e}", project_file.display()))?;
-    let p: Project = serde_json::from_str(&src).map_err(|e| format!("{}: {e}", project_file.display()))?;
+    let p = crate::model::parse_project(src.as_bytes()).map_err(|e| format!("{}: {e}", project_file.display()))?;
     let wasm = find_wasm().ok_or(
         "falta nicostation.wasm. Compílalo una vez con:\n  cargo build --release --target wasm32-unknown-unknown --bin nicostation",
     )?;
@@ -199,6 +206,142 @@ pub fn export_desktop(project_file: &Path, out: &Path, target: DesktopTarget) ->
     Ok((out, files))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+const ANDROID_HELP: &str = "falta el APK plantilla del reproductor para Android. Se compila una vez con docker (ver README, «Exportar a Android»):
+  docker build -t nicostation-android assets/android
+  docker run --rm -v $PWD:/root/src -v nico-cargo-registry:/usr/local/cargo/registry -w /root/src nicostation-android \
+    bash -c 'cargo quad-apk build --release --bin nicostation; chown -R $(id -u):$(id -g) target'
+o indica dónde está con NICOSTATION_ANDROID_TEMPLATE=/ruta/nicostation.apk";
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Busca el APK plantilla (el reproductor compilado para Android, sin juego adentro):
+/// `NICOSTATION_ANDROID_TEMPLATE`, `target/android-artifacts/release/apk/nicostation.apk` (junto a `target/release/`
+/// o desde la carpeta actual) o `nicostation.apk` junto a este programa.
+pub fn find_android_template() -> Result<PathBuf, String> {
+    let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
+    let mut c: Vec<PathBuf> = std::env::var_os("NICOSTATION_ANDROID_TEMPLATE").map(PathBuf::from).into_iter().collect();
+    c.push(dir.join("../android-artifacts/release/apk/nicostation.apk"));
+    c.push(PathBuf::from("target/android-artifacts/release/apk/nicostation.apk"));
+    c.push(dir.join("nicostation.apk"));
+    c.into_iter().find(|p| p.is_file()).ok_or_else(|| ANDROID_HELP.to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Copia el APK plantilla sin su firma y le agrega el juego en `assets/` (ahí lo busca el reproductor en Android).
+/// El resultado no está alineado ni firmado.
+pub fn apk_with_game(template: &Path, files: &[(String, Vec<u8>)], out: &Path) -> Result<(), String> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    let err = |e: zip::result::ZipError| format!("{}: {e}", template.display());
+    let mut src = zip::ZipArchive::new(std::fs::File::open(template).map_err(|e| format!("{}: {e}", template.display()))?).map_err(err)?;
+    let mut dst = zip::ZipWriter::new(std::fs::File::create(out).map_err(|e| format!("{}: {e}", out.display()))?);
+    for i in 0..src.len() {
+        let f = src.by_index_raw(i).map_err(err)?;
+        // La firma vieja no sirve (cambia el contenido) y los assets del juego van nuevos.
+        if f.name().starts_with("META-INF/") || f.name().starts_with("assets/") {
+            continue;
+        }
+        dst.raw_copy_file(f).map_err(err)?;
+    }
+    for (name, data) in files {
+        dst.start_file(format!("assets/{name}"), SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)).map_err(err)?;
+        dst.write_all(data).map_err(|e| e.to_string())?;
+    }
+    dst.finish().map_err(err)?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Corre una herramienta de Android (`zipalign`, `apksigner`, `keytool`): instalada (PATH o `$ANDROID_HOME/build-tools/*`)
+/// o, si no, dentro de docker con la imagen `NICOSTATION_ANDROID_IMAGE` (por defecto `notfl3/cargo-apk`, que las trae).
+/// `dir` se monta como /w en docker; las rutas de `args` deben ser relativas a `dir`.
+fn android_tool(tool: &str, args: &[&str], dir: &Path) -> Result<(), String> {
+    let mut local: Vec<PathBuf> = vec![];
+    if let Some(home) = std::env::var_os("ANDROID_HOME").or_else(|| std::env::var_os("ANDROID_SDK_ROOT")) {
+        let mut bt: Vec<PathBuf> = std::fs::read_dir(Path::new(&home).join("build-tools")).into_iter().flatten().flatten().map(|e| e.path()).collect();
+        bt.sort();
+        local.extend(bt.into_iter().rev().map(|d| d.join(tool)));
+    }
+    let in_path = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(tool).is_file()));
+    let exe = local.into_iter().find(|p| p.is_file()).or(in_path.then(|| PathBuf::from(tool)));
+    let output = match exe {
+        Some(exe) => std::process::Command::new(exe).args(args).current_dir(dir).output(),
+        None => {
+            let image = std::env::var("NICOSTATION_ANDROID_IMAGE").unwrap_or("notfl3/cargo-apk".into());
+            let mut cmd = std::process::Command::new("docker");
+            cmd.args(["run", "--rm", "-v", &format!("{}:/w", dir.display()), "-w", "/w", "-e", "HOME=/w"]);
+            #[cfg(unix)]
+            {
+                // Que los archivos que crea docker sean del usuario, no de root.
+                let id = |f: &str| std::process::Command::new("id").arg(f).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+                if let (Some(u), Some(g)) = (id("-u"), id("-g")) {
+                    cmd.args(["--user", &format!("{u}:{g}")]);
+                }
+            }
+            cmd.arg(&image).arg(tool).args(args).output()
+        }
+    };
+    let o = output.map_err(|e| format!("no pude correr {tool} (ni instalado ni con docker): {e}"))?;
+    if !o.status.success() {
+        return Err(format!("{tool} falló:\n{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Exporta el juego a Android: un `.apk` firmado con una clave de depuración, listo para `adb install`.
+///
+/// Toma el APK plantilla (ver [`find_android_template`]), le pone `juego.json` y sus archivos en `assets/`, lo alinea con
+/// `zipalign` y lo firma con `apksigner` (instalados o vía docker). La clave de depuración se crea una vez en
+/// `<carpeta de datos>/nicostation/android-debug.keystore` (o `NICOSTATION_ANDROID_KEYSTORE`, contraseña `android`).
+/// Todos los juegos salen con el mismo id (`com.nicostation.nicostation`): instalar uno reemplaza al anterior.
+pub fn export_android(project_file: &Path, out: &Path) -> Result<(PathBuf, Vec<String>), String> {
+    let template = find_android_template()?;
+    let src = std::fs::read(project_file).map_err(|e| format!("no pude leer {}: {e}", project_file.display()))?;
+    let p = crate::model::parse_project(&src).map_err(|e| format!("{}: {e}", project_file.display()))?;
+    let base = project_file.parent().unwrap_or(Path::new("."));
+    // En Android el reproductor arranca sin argumentos y busca `juego.json`.
+    let mut files = vec![("juego.json".to_string(), src)];
+    for a in assets(&p) {
+        check_rel(&a)?;
+        if a == "juego.json" {
+            return Err("un archivo del juego no puede llamarse juego.json".into());
+        }
+        files.push((a.replace('\\', "/"), std::fs::read(base.join(&a)).map_err(|e| format!("falta el archivo {a}: {e}"))?));
+    }
+    let out = if out.extension().is_some_and(|e| e.eq_ignore_ascii_case("apk")) { out.to_path_buf() } else { out.with_extension("apk") };
+
+    let work = std::env::temp_dir().join(format!("nicostation-apk-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
+    let result = (|| {
+        apk_with_game(&template, &files, &work.join("sin-firma.apk"))?;
+        android_tool("zipalign", &["-p", "-f", "4", "sin-firma.apk", "alineado.apk"], &work)?;
+        let ks = match std::env::var_os("NICOSTATION_ANDROID_KEYSTORE") {
+            Some(k) => PathBuf::from(k),
+            None => crate::guardado::data_dir(|k| std::env::var(k).ok()).unwrap_or_else(std::env::temp_dir).join("nicostation/android-debug.keystore"),
+        };
+        if !ks.is_file() {
+            android_tool("keytool", &["-genkeypair", "-keystore", "debug.keystore", "-storepass", "android", "-keypass", "android", "-alias", "androiddebugkey",
+                "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000", "-dname", "CN=Android Debug,O=Android,C=US"], &work)?;
+            if let Some(d) = ks.parent() {
+                std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+            }
+            std::fs::copy(work.join("debug.keystore"), &ks).map_err(|e| format!("{}: {e}", ks.display()))?;
+        } else {
+            std::fs::copy(&ks, work.join("debug.keystore")).map_err(|e| format!("{}: {e}", ks.display()))?;
+        }
+        android_tool("apksigner", &["sign", "--ks", "debug.keystore", "--ks-pass", "pass:android", "--key-pass", "pass:android", "--out", "firmado.apk", "alineado.apk"], &work)?;
+        if let Some(d) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+        }
+        std::fs::copy(work.join("firmado.apk"), &out).map_err(|e| format!("{}: {e}", out.display()))?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    result.map(|()| (out, files.into_iter().map(|f| f.0).collect()))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -243,6 +386,34 @@ mod tests {
         assert_eq!(super::DesktopTarget::parse("").unwrap(), Current);
         assert_eq!(super::DesktopTarget::parse("Windows").unwrap(), if cfg!(windows) { Current } else { Windows });
         assert!(super::DesktopTarget::parse("amiga").is_err());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn apk_con_el_juego() {
+        use std::io::{Read, Write};
+        let d = std::env::temp_dir().join(format!("nicoexport-apk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        // Plantilla falsa: manifiesto, una biblioteca guardada sin comprimir, una firma vieja y un asset viejo.
+        let mut z = zip::ZipWriter::new(std::fs::File::create(d.join("t.apk")).unwrap());
+        let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (n, b) in [("AndroidManifest.xml", &b"MANIFEST"[..]), ("lib/arm64-v8a/libnicostation.so", b"ELF"), ("META-INF/CERT.RSA", b"firma"), ("assets/viejo.txt", b"x")] {
+            z.start_file(n, stored).unwrap();
+            z.write_all(b).unwrap();
+        }
+        z.finish().unwrap();
+        let files = vec![("juego.json".to_string(), b"{}".to_vec()), ("img/a.png".to_string(), b"PNG".to_vec())];
+        super::apk_with_game(&d.join("t.apk"), &files, &d.join("o.apk")).unwrap();
+        let mut a = zip::ZipArchive::new(std::fs::File::open(d.join("o.apk")).unwrap()).unwrap();
+        let mut names: Vec<String> = a.file_names().map(String::from).collect();
+        names.sort();
+        assert_eq!(names, ["AndroidManifest.xml", "assets/img/a.png", "assets/juego.json", "lib/arm64-v8a/libnicostation.so"]);
+        assert_eq!(a.by_name("lib/arm64-v8a/libnicostation.so").unwrap().compression(), zip::CompressionMethod::Stored, "se copia tal cual");
+        let mut s = String::new();
+        a.by_name("assets/juego.json").unwrap().read_to_string(&mut s).unwrap();
+        assert_eq!(s, "{}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

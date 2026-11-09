@@ -81,7 +81,7 @@ pub fn read_embedded() -> Option<Pack> {
 /// Si el reproductor ya traía un paquete, se descarta. Devuelve las rutas empaquetadas.
 pub fn pack(player_exe: &Path, project_file: &Path, out_exe: &Path) -> Result<Vec<String>, String> {
     let src = std::fs::read(project_file).map_err(|e| format!("no pude leer {}: {e}", project_file.display()))?;
-    let p: crate::model::Project = serde_json::from_slice(&src).map_err(|e| format!("{}: {e}", project_file.display()))?;
+    let p = crate::model::parse_project(&src).map_err(|e| format!("{}: {e}", project_file.display()))?;
     let base = project_file.parent().unwrap_or(Path::new("."));
     let name = project_file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or("juego.json".into());
 

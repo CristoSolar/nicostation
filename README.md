@@ -9,6 +9,30 @@ cargo run --release --bin nicostation-editor -- examples/plataformas/juego.json 
 cargo test --lib
 ```
 
+### Jugar
+
+```
+nicostation juego.json                                   # ventana
+nicostation juego.json --captura foto.png --segundos 2   # juega 2 s sin entrada, guarda el último cuadro (PNG) y sale
+```
+
+`--captura` dibuja en una textura del tamaño del juego (no depende de que la ventana se vea), así sirve para pruebas
+automáticas y para agentes. No suena nada mientras captura.
+
+- **Ajustes del proyecto** (`settings`): `scale_mode` `fit` (franjas negras), `stretch` (llena la ventana) o `integer`
+  (múltiplos enteros, pixel perfect); `pixel_art` (dibujo nítido; si no, suavizado); `max_fps` (0 = los de la pantalla; en web
+  manda el navegador); `icon` (ícono de la ventana, cualquier PNG/JPG: se achica a 16/32/64); `loading_image` (fondo de la pantalla de carga).
+- **Mandos**: los botones llegan como teclas `Pad1A`, `Pad1B`, `Pad1X`, `Pad1Y`, `Pad1L`, `Pad1R`, `Pad1LT`, `Pad1RT`, `Pad1Start`,
+  `Pad1Select`, `Pad1LS`, `Pad1RS`, `Pad1Up/Down/Left/Right` (cruceta), `Pad1Home` (y `Pad2…` para el segundo mando); las palancas y
+  gatillos como ejes `Pad1LX`, `Pad1LY`, `Pad1RX`, `Pad1RY` (-1 a 1, y positivo = abajo) y `Pad1LT`, `Pad1RT` (0 a 1), con zona muerta de 0.15.
+  Escritorio con gilrs (en Linux usa libudev, que trae cualquier distribución); web con `navigator.getGamepads()`.
+- **Sonido**: canales (un sonido con canal reemplaza al que sonaba en ese canal), volumen por sonido, música con fundido cruzado
+  (`play_music` con segundos de fundido), «volumen del canal» con fundido (el canal `musica` es la música) y «detener canal».
+  Escritorio con kira; web con WebAudio (el plugin de audio de `mq_js_bundle.js`).
+- **Efectos** por objeto o instancia (propiedad `effect` y su intensidad `effect_amount` de 0 a 1): `flash`, `outline` (silueta del
+  color de la instancia, blanca por defecto), `grayscale`, `wave`. En sprites todos; en fondos y mapas `flash` y `grayscale`; en cajas y
+  textos por color. Son shaders GLSL ES 1.00: andan igual en la exportación web (WebGL1).
+
 ### Exportar a web
 
 El reproductor se compila una vez a WebAssembly y sirve para cualquier juego:
@@ -46,6 +70,33 @@ cargo build --release --target x86_64-pc-windows-gnu --bin nicostation
 También se puede indicar el reproductor con `NICOSTATION_PLAYER_WINDOWS=/ruta/nicostation.exe`.
 Desde código: `nicostation::export::export_desktop(proyecto, salida, DesktopTarget::Current | Windows)`.
 
+En Linux el ejecutable usa `libasound.so.2` (sonido) y `libudev.so.1` (mandos), que vienen en cualquier distribución de escritorio.
+El de Windows no necesita nada aparte (sonido con WASAPI, mandos con XInput/WGI).
+
+### Exportar a Android (`.apk`)
+
+Igual que en escritorio, el juego va pegado a un reproductor ya compilado: el **APK plantilla** (el reproductor para Android,
+sin juego). Se compila una sola vez con docker (no hace falta instalar el SDK ni el NDK; la imagen pesa ~12 GB):
+
+```
+docker build -t nicostation-android assets/android        # una vez (~4 min): NDK r25 + SDK 31 + Rust estable + cargo-quad-apk
+docker run --rm -v $PWD:/root/src -v nico-cargo-registry:/usr/local/cargo/registry -w /root/src nicostation-android \
+  bash -c 'cargo quad-apk build --release --bin nicostation; chown -R $(id -u):$(id -g) target'
+# → target/android-artifacts/release/apk/nicostation.apk (arm64-v8a + armeabi-v7a, Android 8.0+)
+./target/release/nicostation --export-android examples/plataformas/juego.json plataformas.apk
+adb install -r plataformas.apk
+```
+
+`--export-android` copia la plantilla, le pone `juego.json` y sus archivos en `assets/` (de ahí los lee el reproductor en
+Android), y la alinea y firma con `zipalign` y `apksigner`: los del SDK si están (`$ANDROID_HOME/build-tools/*` o el PATH), si no
+dentro de docker con la imagen `notfl3/cargo-apk` (o `NICOSTATION_ANDROID_IMAGE`). La firma es de depuración: la clave se crea
+una vez en `~/.local/share/nicostation/android-debug.keystore` (contraseña `android`; otra con `NICOSTATION_ANDROID_KEYSTORE`).
+La plantilla también se busca en `NICOSTATION_ANDROID_TEMPLATE`. Desde código: `nicostation::export::export_android(proyecto, salida)`.
+
+Límites por ahora: todos los juegos salen con el mismo id (`com.nicostation.nicostation`, nombre «NicoStation», sin ícono propio;
+instalar uno reemplaza al anterior), en horizontal y sin mandos (los controles táctiles sí). Para la Play Store hace falta firmar
+con una clave propia (y Google prefiere AAB). La partida se guarda en la carpeta privada de la app.
+
 ### Partida guardada
 
 Lo que el juego guarda con «Guardar en la partida» (`save_value`, se lee con `saved("nombre", 0)`) queda guardado al cerrar:
@@ -53,6 +104,7 @@ Lo que el juego guarda con «Guardar en la partida» (`save_value`, se lee con `
 - Linux: `~/.local/share/nicostation/<nombre-del-juego>/guardado.json` (o `$XDG_DATA_HOME/...`)
 - Windows: `%APPDATA%\nicostation\<nombre-del-juego>\guardado.json`; macOS: `~/Library/Application Support/nicostation/...`
 - Web: `localStorage` del navegador, clave `nicostation:<nombre-del-juego>`
+- Android: carpeta privada de la app, `/data/data/com.nicostation.nicostation/files/nicostation/<nombre-del-juego>/guardado.json`
 
 `<nombre-del-juego>` es el nombre del proyecto en minúsculas, sin acentos y con guiones («Lluvia de asteroides» → `lluvia-de-asteroides`).
 Si cambias el nombre del juego, empieza con una partida nueva.
@@ -85,7 +137,8 @@ Herramientas: `catalogo`, `proyecto_crear`, `proyecto_abrir`, `proyecto_resumen`
 | `src/pack.rs` | Paquete pegado al final del reproductor: el juego entero en un ejecutable |
 | `src/validate.rs` | Revisa un proyecto sin ejecutarlo: referencias, instrucciones, expresiones, archivos |
 | `src/bin/nicostation-mcp.rs` | Conector MCP para agentes |
-| `src/bin/nicostation.rs` | Reproductor (macroquad): imágenes, sonido, teclado y mouse |
+| `src/bin/nicostation.rs` | Reproductor (macroquad): dibujo, sonido, teclado, mouse, toques y mandos |
+| `src/reproductor/` | Partes del reproductor: escalado/paralaje/fondos (`geometria`), canales y fundidos (`audio`), shaders (`efectos`), mandos (`mando`) |
 | `src/bin/nicostation-editor.rs` | Editor visual (egui) |
 
 ## Cómo se arma un juego
