@@ -103,6 +103,9 @@ pub fn export_web(project_file: &Path, out: &Path) -> Result<Vec<String>, String
     let title = p.name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     write("index.html", INDEX.replace("{{TITULO}}", &title).as_bytes())?;
     write("mq_js_bundle.js", BUNDLE.as_bytes())?;
+    // Ícono de la pestaña: el del juego (ajustes) si tiene, o el de NicoStation.
+    let favicon = Some(&p.settings.icon).filter(|i| !i.is_empty()).and_then(|i| std::fs::read(base.join(i)).ok());
+    write("icono.png", favicon.as_deref().unwrap_or(include_bytes!("../assets/web/favicon.png")))?;
     write("nicostation.wasm", &std::fs::read(&wasm).map_err(|e| format!("{}: {e}", wasm.display()))?)?;
     write("juego.json", src.as_bytes())?;
     for a in assets(&p) {

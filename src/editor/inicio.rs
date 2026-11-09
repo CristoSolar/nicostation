@@ -216,8 +216,9 @@ impl Inicio {
                 ui.add_space(30.);
             }
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new(ic::GAMEPAD).size(40.).color(ACCENT));
-                ui.add_space(4.);
+                let (_, logo) = marca(ui.ctx());
+                imagen_marca(ui, &logo, 64.);
+                ui.add_space(12.);
                 ui.label(RichText::new("¿Qué juego quieres hacer hoy?").font(sb(32.)).color(TEXT));
                 ui.add_space(2.);
                 ui.label(RichText::new("Elige uno para empezar. Después lo cambias como quieras.").size(16.).color(TEXT_SOFT));

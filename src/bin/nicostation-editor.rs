@@ -1947,9 +1947,11 @@ impl App {
             let (r, _) = egui::containers::menu::MenuButton::from_button(b).ui(ui, |ui| self.file_menu(ui));
             r.on_hover_text("Archivo");
             ui.add_space(4.);
-            ui.label(RichText::new(ic::GAMEPAD).size(18.).color(ACCENT));
-            if !compact {
-                ui.label(RichText::new("NicoStation").font(sb(15.)));
+            let (icono, logo) = marca(ui.ctx());
+            if compact {
+                imagen_marca(ui, &icono, 22.).on_hover_text("NicoStation");
+            } else {
+                imagen_marca(ui, &logo, 20.).on_hover_text("NicoStation");
                 let file = self.path.as_ref().and_then(|p| p.file_name()).map_or("sin título".into(), |f| f.to_string_lossy().to_string());
                 ui.add(egui::Label::new(muted(format!("{}{}", self.p.name, if self.dirty() { " *" } else { "" }))).truncate()).on_hover_text(file);
                 lr.0 = ui.min_rect().width();

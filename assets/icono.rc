@@ -1,0 +1,2 @@
+// Ícono de los ejecutables de Windows (lo compila build.rs con windres).
+1 ICON "icono.ico"

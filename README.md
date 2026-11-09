@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/marca/nico_station_logo_transparente.png" alt="NicoStation" width="480"></p>
+
 # NicoStation
 
 Motor de juegos 2D en Rust que se programa con **hojas de eventos** (condición → acción), como
@@ -173,6 +175,8 @@ El modelo de eventos, las reglas de selección de objetos y los valores por defe
 siguen a [GDevelop](https://github.com/4ian/GDevelop) (licencia MIT, © Florian Rival y colaboradores),
 estudiado desde su código fuente público. NicoStation es una implementación nueva en Rust y no incluye código de GDevelop.
 El análisis está en `docs/`.
+
+Logo e ícono de NicoStation en `assets/marca/` (variantes clara, oscura, naranja y azul noche, y el ícono de app).
 
 Fuentes incluidas en `assets/fonts/`: Geist (SIL Open Font License) e iconos Phosphor (MIT); licencias junto a cada archivo.
 `assets/web/mq_js_bundle.js` viene de macroquad (MIT/Apache-2.0), con el arreglo y el agregado descritos en `assets/web/README.md`.

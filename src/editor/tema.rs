@@ -12,7 +12,8 @@ pub const BORDER_STRONG: Color32 = Color32::from_rgb(0x3f, 0x3f, 0x46);
 pub const TEXT: Color32 = Color32::from_rgb(0xed, 0xed, 0xf0);
 pub const TEXT_MUTED: Color32 = Color32::from_rgb(0xa1, 0xa1, 0xaa);
 pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x71, 0x71, 0x7a);
-pub const ACCENT: Color32 = Color32::from_rgb(0xff, 0x7a, 0x45);
+/// Naranja de la marca NicoStation (variante modo oscuro, ver assets/marca/).
+pub const ACCENT: Color32 = Color32::from_rgb(0xff, 0x7a, 0x27);
 pub const ON_ACCENT: Color32 = Color32::from_rgb(0x1a, 0x0e, 0x08);
 /// Acento al ~16 % (premultiplicado) para filas seleccionadas.
 pub const ACCENT_SOFT: Color32 = Color32::from_rgba_premultiplied(41, 20, 11, 41);
@@ -256,4 +257,27 @@ pub fn herr_btn(ui: &mut Ui, sel: bool, icon: &str, label: &str, tip: &str, size
     let g = if g.size().x > size.x - 6. { p.layout(label.to_string(), FontId::proportional(11.), TEXT_SOFT, size.x - 4.) } else { g };
     p.galley(egui::Pos2::new(c.x - g.size().x / 2., rect.bottom() - 5. - g.size().y), g, TEXT);
     r.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Ícono y logo de NicoStation como texturas (se cargan una vez y quedan en la memoria de egui).
+pub fn marca(ctx: &egui::Context) -> (egui::TextureHandle, egui::TextureHandle) {
+    let id = egui::Id::unique("nicostation-marca");
+    if let Some(t) = ctx.data(|d| d.get_temp::<(egui::TextureHandle, egui::TextureHandle)>(id)) {
+        return t;
+    }
+    let cargar = |nombre: &str, bytes: &[u8]| {
+        let img = image::load_from_memory(bytes).map(|i| i.to_rgba8()).unwrap_or_else(|_| image::RgbaImage::new(1, 1));
+        let (w, h) = img.dimensions();
+        let ci = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &img.into_raw());
+        ctx.load_texture(nombre, ci, egui::TextureOptions::LINEAR)
+    };
+    let t = (cargar("marca-icono", include_bytes!("../../assets/icono.png")), cargar("marca-logo", include_bytes!("../../assets/logo_oscuro.png")));
+    ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+    t
+}
+
+/// Imagen de la marca a una altura dada (en puntos), respetando su proporción.
+pub fn imagen_marca(ui: &mut egui::Ui, t: &egui::TextureHandle, alto: f32) -> egui::Response {
+    let s = t.size_vec2();
+    ui.add(egui::Image::new((t.id(), egui::vec2(alto * s.x / s.y, alto))))
 }
