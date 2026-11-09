@@ -15,9 +15,11 @@ pub fn particle_look(def: &ParticleDef, p: &Particle) -> ([u8; 3], f32, f32) {
 
 /// Suelta `n` partículas desde (x, y). `giro` = ángulo del emisor (se suma a la dirección del cono).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn emitir(def: &ParticleDef, n: usize, x: f32, y: f32, giro: f32, obj: &str, layer: &str, emitter: u64, rnd: &dyn Fn() -> f32, out: &mut Vec<Particle>) {
+pub(crate) fn emitir(def: &ParticleDef, n: usize, (x, y, w, h): (f32, f32, f32, f32), giro: f32, obj: &str, layer: &str, emitter: u64, rnd: &dyn Fn() -> f32, out: &mut Vec<Particle>) {
     let rango = |r: [f32; 2], u: f32| r[0] + (r[1] - r[0]) * u;
     for _ in 0..n {
+        // Con `area`, el punto de nacimiento es cualquiera dentro del rectángulo del emisor.
+        let (x, y) = if def.area { (x + (rnd() - 0.5) * w, y + (rnd() - 0.5) * h) } else { (x, y) };
         let ang = (def.angle + giro + (rnd() - 0.5) * def.spread).to_radians();
         let speed = rango(def.speed, rnd());
         out.push(Particle {

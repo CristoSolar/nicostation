@@ -17,31 +17,33 @@ GameMaker, sin perder el modo fácil para niños. Cada fase deja todo compilando
 
 ## Fase B: calidad visual y de sonido
 - [x] Escala (scale_x/scale_y), color (tint) y visible por instancia.
-- [ ] Sprites: punto de origen, máscara de colisión propia, profundidad automática por Y.
+- [x] Sprites: punto de origen y máscara de colisión propia (profundidad automática por Y: con «set z = y»).
 - [x] Cámara: seguir suave, límites, temblor, zoom animado.
 - [x] Tweens (movimientos suaves con curvas).
-- [ ] Partículas.
-- [ ] Fondos que se repiten y paralaje; fuentes propias (TTF) con alineación y salto de línea.
-- [ ] Audio: canales, volumen por sonido, música con fundido.
-- [ ] Efectos (shaders): destello, silueta, escala de grises, ondas.
+- [x] Partículas.
+- [x] Fondos que se repiten y paralaje; fuentes propias (TTF) con alineación y salto de línea.
+- [x] Audio: canales, volumen por sonido, música con fundido.
+- [x] Efectos (shaders): destello, silueta, escala de grises, ondas.
 
 ## Fase C: programar en serio
 - [x] Scripts con Rhai (lenguaje embebido en Rust): acción «Ejecutar script», objetos con código,
       acceso a instancias, variables y funciones del motor. Editor de código con resaltado.
-- [ ] Variables listas y estructuras (inventarios, tablas).
-- [ ] Eventos externos reutilizables entre escenas; búsqueda y reemplazo en eventos.
-- [ ] Física 2D (rapier2d) y búsqueda de caminos (A* en grilla).
-- [ ] Mandos (gamepad) en escritorio y web.
+- [x] Variables listas y estructuras (inventarios, tablas).
+- [x] Búsqueda y reemplazo en eventos.
+- [ ] Eventos externos reutilizables entre escenas.
+- [x] Física 2D (rapier2d) y búsqueda de caminos (A* en grilla).
+- [x] Mandos (gamepad) en escritorio y web.
 
 ## Fase D: editor de estudio
-- [ ] Selección múltiple, copiar/pegar, alinear y distribuir, rotar y escalar con manijas.
-- [ ] Explorador de recursos con importación (arrastrar archivos), carpetas y renombrado seguro.
-- [ ] Ajustes del proyecto: escalado pixel perfect, FPS, ícono, pantalla de carga.
-- [ ] Versionado del formato del proyecto con migraciones.
-- [ ] Perfilador (tiempos por evento y por comportamiento).
+- [x] Selección múltiple, copiar/pegar, alinear y distribuir, rotar y escalar con manijas.
+- [x] Explorador de recursos con importación (arrastrar archivos), carpetas y renombrado seguro.
+- [x] Ajustes del proyecto: escalado pixel perfect, FPS, ícono, pantalla de carga.
+- [x] Versionado del formato del proyecto con migraciones.
+- [x] Perfilador (tiempos por evento y por comportamiento).
 
 ## Fase E: publicar
-- [ ] Exportar a Windows, macOS y Android; publicación a itch.io.
+- [x] Exportar a Android (APK firmada de depuración; falta probar en un teléfono).
+- [ ] Exportar a Windows (código listo, falta instalar mingw) y macOS; publicación a itch.io.
 - [ ] Manual de usuario y referencia de cada bloque.
 
 ## Fase F: 3D (ver docs/godot-3d.md y docs/tecnologia-3d.md)

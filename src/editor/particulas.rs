@@ -28,11 +28,11 @@ pub fn presets() -> Vec<(&'static str, &'static str, ParticleDef)> {
         }),
         ("Lluvia", ic::CLOUD_RAIN, ParticleDef {
             color_start: [150, 190, 255], color_end: [120, 160, 230], alpha_start: 210., alpha_end: 150., size_start: 3., size_end: 3.,
-            life: [0.9, 1.3], speed: [300., 420.], angle: 95., spread: 40., gravity: [0., 300.], rate: 120., max: 400, additive: false, ..base.clone()
+            life: [0.9, 1.3], speed: [300., 420.], angle: 95., spread: 10., gravity: [0., 300.], rate: 120., max: 400, additive: false, area: true, ..base.clone()
         }),
         ("Nieve", ic::SNOWFLAKE, ParticleDef {
             color_start: [255, 255, 255], color_end: [220, 235, 255], alpha_start: 255., alpha_end: 180., size_start: 5., size_end: 4.,
-            life: [3., 5.], speed: [20., 50.], angle: 90., spread: 70., gravity: [6., 10.], rate: 15., max: 200, additive: false, ..base.clone()
+            life: [3., 5.], speed: [20., 50.], angle: 90., spread: 50., gravity: [6., 10.], rate: 15., max: 200, additive: false, area: true, ..base.clone()
         }),
         ("Explosión", ic::LIGHTNING, ParticleDef {
             color_start: [255, 230, 120], color_end: [200, 40, 0], alpha_start: 255., alpha_end: 0., size_start: 16., size_end: 2.,
@@ -121,7 +121,9 @@ impl Sim {
         let a = (d.angle + (self.azar() - 0.5) * d.spread).to_radians();
         let s = self.entre(d.speed);
         let life = self.entre(d.life).max(0.05);
-        self.parts.push(Part { p: Vec2::ZERO, v: Vec2::new(a.cos(), a.sin()) * s, age: 0., life });
+        // Vista previa: el «área» es un ancho de 160 px (en la escena es el rectángulo del emisor).
+        let p = if d.area { Vec2::new((self.azar() - 0.5) * 160., 0.) } else { Vec2::ZERO };
+        self.parts.push(Part { p, v: Vec2::new(a.cos(), a.sin()) * s, age: 0., life });
     }
     pub fn reiniciar(&mut self) {
         self.parts.clear();
@@ -353,6 +355,9 @@ pub fn editor(ui: &mut Ui, d: &mut ParticleDef, sim: &mut Sim, dt: f32, tex: Opt
         ui.end_row();
         lbl(ui, "Brillan", "Aditivo");
         ui.checkbox(&mut d.additive, if facil { "Los colores se suman (fuego, magia)" } else { "Mezcla aditiva" });
+        ui.end_row();
+        lbl(ui, "Dónde nacen", "Área");
+        ui.checkbox(&mut d.area, if facil { "En todo el ancho del objeto (lluvia, nieve)" } else { "En todo el rectángulo del emisor" });
         ui.end_row();
         lbl(ui, "Al terminar", "Auto destruir");
         ui.checkbox(&mut d.auto_destroy, if facil { "Se borra solo (explosiones)" } else { "Borrar el emisor cuando se apaga" });

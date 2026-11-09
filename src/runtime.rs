@@ -2051,7 +2051,7 @@ impl World {
             }
             let n = n.min(def.max.saturating_sub(have));
             let (cx, cy) = (me.cx(), me.cy());
-            crate::particulas::emitir(def, n, cx, cy, me.angle, &me.obj, &me.layer, me.id, &rnd, &mut self.particles);
+            crate::particulas::emitir(def, n, (cx, cy, me.w, me.h), me.angle, &me.obj, &me.layer, me.id, &rnd, &mut self.particles);
             if def.auto_destroy && (!me.emitting || def.rate <= 0.) && have + n == 0 {
                 me.dead = true;
             }

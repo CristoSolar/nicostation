@@ -478,6 +478,9 @@ pub struct ParticleDef {
     /// Se borra solo cuando ya no emite ni le quedan partículas (para explosiones de una vez).
     #[serde(default)]
     pub auto_destroy: bool,
+    /// Nacen en cualquier punto del rectángulo del emisor (lluvia, nieve) en vez de en su centro.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub area: bool,
 }
 
 impl Default for ParticleDef {
