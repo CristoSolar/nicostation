@@ -17,12 +17,21 @@ pub struct Input {
     /// Left, Right, Middle
     pub mouse_down: [bool; 3],
     pub mouse_pressed: [bool; 3],
+    /// Ejes de mandos: "Pad1LX", "Pad1LY", "Pad1RX", "Pad1RY", "Pad1LT", "Pad1RT" de -1 a 1.
+    /// Los botones de los mandos llegan como teclas: "Pad1A", "Pad1B", "Pad1X", "Pad1Y", "Pad1Start",
+    /// "Pad1Select", "Pad1L", "Pad1R", "Pad1Up", "Pad1Down", "Pad1Left", "Pad1Right".
+    pub axes: HashMap<String, f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
-    PlaySound { file: String, volume: f32 },
-    PlayMusic { file: String, volume: f32 },
+    /// `channel` vacío = sin canal; con canal, reemplaza lo que sonaba en ese canal.
+    PlaySound { file: String, volume: f32, channel: String },
+    /// `fade`: segundos de fundido de entrada (y de salida de la música anterior).
+    PlayMusic { file: String, volume: f32, fade: f32 },
+    /// Cambiar el volumen de un canal ("musica" = la música) en `fade` segundos.
+    ChannelVolume { channel: String, volume: f32, fade: f32 },
+    StopChannel { channel: String },
     StopMusic,
     StopSound { file: String },
     /// Hay que guardar la partida: el reproductor escribe estos datos (archivo o localStorage).
@@ -80,6 +89,10 @@ pub struct Inst {
     /// Tamaño original, para scale_x / scale_y.
     pub base_w: f32,
     pub base_h: f32,
+    /// Efecto visual: none, flash, outline, grayscale, wave.
+    pub effect: String,
+    /// Intensidad del efecto (0 a 1).
+    pub effect_amount: f32,
     /// Alarmas en marcha: (nombre, segundos que faltan).
     pub alarms: Vec<(String, f32)>,
     /// Alarmas que sonaron en este frame.
@@ -140,6 +153,20 @@ struct Plat {
     grabbable: bool,
 }
 
+/// Una partícula viva. La simula el motor; los reproductores la dibujan con los parámetros del emisor (`obj`).
+#[derive(Clone, Debug, Default)]
+pub struct Particle {
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+    pub age: f32,
+    pub life: f32,
+    /// Objeto emisor (para leer su ParticleDef) y capa donde se dibuja.
+    pub obj: String,
+    pub layer: String,
+}
+
 /// Instancias elegidas por objeto real (no por grupo). Objeto ausente = todas sus instancias.
 pub type Sol = HashMap<String, Vec<usize>>;
 
@@ -179,6 +206,10 @@ pub struct World {
     pub storage: Vars,
     /// La escena actual es 3D.
     pub dim3: bool,
+    /// Partículas vivas de todos los emisores.
+    pub particles: Vec<Particle>,
+    /// Perfilador: (qué, milisegundos) del último paso — eventos de primer nivel y comportamientos.
+    pub profile: Vec<(String, f32)>,
     tasks: Vec<Task>,
     types: HashMap<String, ObjectDef>,
     timers: HashMap<String, f64>,
@@ -221,6 +252,8 @@ impl World {
             cmds: vec![],
             storage: Vars::new(),
             dim3: false,
+            particles: vec![],
+            profile: vec![],
             tasks: vec![],
             types: HashMap::new(),
             timers: HashMap::new(),
@@ -305,6 +338,8 @@ impl World {
             Kind::Tilemap { tile, cols, rows, .. } => (*cols as f32 * tile, *rows as f32 * tile, String::new()),
             Kind::Mesh { size, .. } => (size[0], size[1], String::new()),
             Kind::Light { .. } | Kind::Camera3d { .. } => (0.5, 0.5, String::new()),
+            Kind::Background { w, h, .. } => (*w, *h, String::new()),
+            Kind::Particles(_) => (16., 16., String::new()),
         };
         let d = match &t.kind {
             Kind::Mesh { size, .. } => size[2],
@@ -328,6 +363,8 @@ impl World {
             vars: t.vars.clone(),
             tiles,
             visible: true,
+            effect: t.effect.clone(),
+            effect_amount: 1.,
             tint: [255, 255, 255],
             base_w: w,
             base_h: h,
@@ -989,8 +1026,17 @@ impl World {
             "play_sound" | "play_music" => {
                 let volume = if a(1).is_empty() { 100. } else { num(self, a(1), sol, None) };
                 let file = a(0).to_string();
-                self.cmds.push(if c.op == "play_sound" { Cmd::PlaySound { file, volume } } else { Cmd::PlayMusic { file, volume } });
+                self.cmds.push(if c.op == "play_sound" {
+                    Cmd::PlaySound { file, volume, channel: a(2).to_string() }
+                } else {
+                    Cmd::PlayMusic { file, volume, fade: if a(2).is_empty() { 0. } else { num(self, a(2), sol, None) } }
+                });
             }
+            "channel_volume" => {
+                let (volume, fade) = (num(self, a(1), sol, None), num(self, a(2), sol, None));
+                self.cmds.push(Cmd::ChannelVolume { channel: a(0).into(), volume, fade });
+            }
+            "stop_channel" => self.cmds.push(Cmd::StopChannel { channel: a(0).into() }),
             "stop_music" => self.cmds.push(Cmd::StopMusic),
             "tween" => {
                 for i in self.pick(a(0), sol) {
@@ -1120,6 +1166,8 @@ impl World {
             "z" => n(me.z),
             "speed" => n(me.vx.hypot(me.vy)),
             "visible" => Value::Num(me.visible as i32 as f64),
+            "effect" => Value::Str(me.effect.clone()),
+            "effect_amount" => n(me.effect_amount),
             "d" => n(me.d),
             "pitch" => n(me.pitch),
             "roll" => n(me.roll),
@@ -1149,6 +1197,8 @@ impl World {
             "z" => me.z = f,
             "text" => me.text = v.text(),
             "visible" => me.visible = v.truthy(),
+            "effect" => me.effect = v.text(),
+            "effect_amount" => me.effect_amount = f.clamp(0., 1.),
             "d" => me.d = f,
             "pitch" => me.pitch = f,
             "roll" => me.roll = f,

@@ -215,14 +215,13 @@ enum PropAct {
 }
 
 fn new_scene(name: &str) -> Scene {
-    Scene { name: name.into(), background: [30, 30, 40], layers: vec![Layer { name: String::new(), visible: true, fixed: false }], ..Default::default() }
+    Scene { name: name.into(), background: [30, 30, 40], layers: vec![Layer { name: String::new(), visible: true, fixed: false, parallax: [1., 1.] }], ..Default::default() }
 }
 
 fn new_project() -> Project {
     Project {
         name: "Mi juego".into(), width: 800., height: 600., first_scene: "Escena".into(), globals: Vars::new(),
-        objects: vec![], scenes: vec![new_scene("Escena")], functions: vec![], plantilla: String::new(),
-    }
+        objects: vec![], scenes: vec![new_scene("Escena")], functions: vec![], plantilla: String::new(), settings: Default::default(), version: FORMAT_VERSION }
 }
 
 fn load(path: &Path) -> Result<Project, String> {
@@ -559,6 +558,7 @@ fn tilemap_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, files: &[String], 
 fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: Option<&HashMap<String, usize>>, files: &[String], tex: Option<&egui::TextureHandle>) -> Option<PropAct> {
     let mut act = tilemap_props(ui, o, base, files, tex, kid.is_some());
     grid("objprops").show(ui, |ui| match &mut o.kind {
+        Kind::Background { .. } | Kind::Particles(_) => {} // ponytail: propiedades pendientes
         Kind::Box { w, h, color } => {
             lbl(ui, "Ancho");
             ui.add(DragValue::new(w).range(1..=4096));
@@ -570,7 +570,7 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
             ui.color_edit_button_srgb(color);
             ui.end_row();
         }
-        Kind::Text { text, size, color } => {
+        Kind::Text { text, size, color, .. } => {
             lbl(ui, "Texto");
             ui.add(TextEdit::singleline(text).desired_width(150.));
             ui.end_row();
@@ -753,6 +753,8 @@ fn obj_props(ui: &mut Ui, o: &mut ObjectDef, base: &Path, nb: &mut String, kid: 
 
 fn kind_icon(k: &Kind) -> &'static str {
     match k {
+        Kind::Background { .. } => ic::IMAGE,
+        Kind::Particles(_) => ic::SPARKLE,
         Kind::Sprite { .. } => ic::IMAGE,
         Kind::Text { .. } => ic::TEXT_T,
         Kind::Box { .. } => ic::CUBE,
@@ -765,6 +767,8 @@ fn kind_icon(k: &Kind) -> &'static str {
 
 fn kind_name(k: &Kind) -> &'static str {
     match k {
+        Kind::Background { .. } => "Fondo",
+        Kind::Particles(_) => "Partículas",
         Kind::Sprite { .. } => "Sprite",
         Kind::Text { .. } => "Texto",
         Kind::Box { .. } => "Caja",
@@ -996,12 +1000,14 @@ impl App {
 
     fn obj_size(&self, o: &ObjectDef) -> Vec2 {
         match &o.kind {
+            Kind::Background { w, h, .. } => Vec2::new(*w, *h),
+            Kind::Particles(_) => Vec2::splat(24.),
             // En el lienzo 2D, un objeto 3D se ve desde arriba (32 px por metro) hasta el visor 3D (F7).
             Kind::Mesh { size, .. } => Vec2::new(size[0] * 32., size[2] * 32.),
             Kind::Light { .. } | Kind::Camera3d { .. } => Vec2::splat(24.),
             Kind::Box { w, h, .. } => Vec2::new(*w, *h),
             Kind::Text { text, size, .. } => Vec2::new(text.chars().count().max(1) as f32 * size * 0.55, *size),
-            Kind::Sprite { w, h, animations } if *w <= 0. || *h <= 0. => {
+            Kind::Sprite { w, h, animations, .. } if *w <= 0. || *h <= 0. => {
                 let t = animations.first().and_then(|a| a.frames.first()).and_then(|f| self.tex.get(f).cloned().flatten());
                 t.map_or(Vec2::splat(32.), |t| t.size_vec2())
             }
@@ -1061,6 +1067,7 @@ impl App {
         }
         for o in &objs {
             let t = match &o.kind {
+                Kind::Background { .. } | Kind::Particles(_) => eventos::Thumb::Color([120, 140, 170]),
                 Kind::Box { color, .. } => eventos::Thumb::Color(*color),
                 Kind::Text { color, .. } => eventos::Thumb::Text(*color),
                 Kind::Sprite { animations, .. } => {
@@ -1458,15 +1465,15 @@ impl App {
         ui.add_space(4.);
         ui.horizontal_wrapped(|ui| {
             for kind in [
-                Kind::Sprite { w: 0., h: 0., animations: vec![Animation { name: "quieto".into(), frames: vec![], fps: 10., looping: true }] },
-                Kind::Text { text: "Texto".into(), size: 24., color: [255; 3] },
+                Kind::Sprite { w: 0., h: 0., animations: vec![Animation { name: "quieto".into(), frames: vec![], fps: 10., looping: true }], mask: vec![], origin: None },
+                Kind::Text { text: "Texto".into(), size: 24., color: [255; 3], align: "left".into(), font: String::new(), wrap: 0. },
                 Kind::Box { w: 32., h: 32., color: [200, 80, 80] },
             ] {
                 let base = kind_name(&kind);
                 if ui.add(Button::new(it(kind_icon(&kind), base))).on_hover_text(format!("Nuevo objeto {}", base.to_lowercase())).clicked() {
                     let n = self.nombre_libre(base);
                     let sprite = matches!(kind, Kind::Sprite { .. });
-                    self.scene().objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![], vars: Vars::new() });
+                    self.scene().objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![], vars: Vars::new(), effect: String::new() });
                     self.sel_obj = Some(n.clone());
                     if sprite {
                         self.nuevo = Some(Nuevo::Sprite(n));
@@ -1493,7 +1500,7 @@ impl App {
         let kind = Kind::Tilemap { tileset: String::new(), tile, cols, rows, data: vec![], pass: vec![] };
         let platform = Behavior::Platform { jumpthru: false, ladder: false, grabbable: false };
         let s = self.scene();
-        s.objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![platform], vars: Vars::new() });
+        s.objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![platform], vars: Vars::new(), effect: String::new() });
         s.instances.push(Instance { obj: n.clone(), ..Default::default() });
         self.sel_inst = Some(s.instances.len() - 1);
         self.sel_obj = Some(n.clone());
@@ -1541,7 +1548,7 @@ impl App {
         let base = self.base_dir();
         let (obj, rutas, fps, titulo, rejilla, nuevo_wh) = match &destino {
             dibujo::Destino::Anim { obj, anim } => {
-                let Some(Kind::Sprite { animations, w, h }) = self.obj_mut(obj).map(|o| o.kind.clone()) else { return };
+                let Some(Kind::Sprite { animations, w, h, .. }) = self.obj_mut(obj).map(|o| o.kind.clone()) else { return };
                 let Some(a) = animations.get(*anim) else { return };
                 let wh = if w > 0. && h > 0. && w <= 256. && h <= 256. { (w as usize, h as usize) } else { (32, 32) };
                 (obj.clone(), a.frames.clone(), a.fps, format!("{obj} · animación «{}»", a.name), None, wh)
@@ -1758,7 +1765,7 @@ impl App {
         }
         if ui.button(it(ic::PLUS, "Capa")).clicked() {
             let n = (1..).map(|k| format!("Capa{k}")).find(|n| !names.contains(n)).unwrap();
-            s.layers.push(Layer { name: n, visible: true, fixed: false });
+            s.layers.push(Layer { name: n, visible: true, fixed: false, parallax: [1., 1.] });
         }
     }
 
@@ -2158,6 +2165,7 @@ impl App {
             let sz = Vec2::new(ins.w.unwrap_or(sz.x), ins.h.unwrap_or(sz.y));
             let sr = Rect::from_min_max(to_s(pos), to_s(pos + sz));
             match &o.kind {
+                Kind::Background { .. } | Kind::Particles(_) => drop(painter.rect_stroke(sr, 2., (1., TEXT_FAINT), egui::StrokeKind::Inside)), // ponytail: dibujo real pendiente
                 // Vista desde arriba de los objetos 3D (el visor 3D llega en la etapa F7).
                 Kind::Mesh { color: [r, g, b], .. } => {
                     painter.rect_filled(sr, 3., Color32::from_rgb(*r, *g, *b));
@@ -2166,7 +2174,7 @@ impl App {
                 Kind::Light { color: [r, g, b], .. } => drop(painter.text(sr.center(), Align2::CENTER_CENTER, ic::LIGHTBULB, egui::FontId::proportional(22. * z), Color32::from_rgb(*r, *g, *b))),
                 Kind::Camera3d { .. } => drop(painter.text(sr.center(), Align2::CENTER_CENTER, ic::CAMERA, egui::FontId::proportional(22. * z), TEXT_SOFT)),
                 Kind::Box { color: [r, g, b], .. } => drop(painter.rect_filled(sr, 0., Color32::from_rgb(*r, *g, *b))),
-                Kind::Text { text, size, color: [r, g, b] } => {
+                Kind::Text { text, size, color: [r, g, b], .. } => {
                     painter.text(sr.min, Align2::LEFT_TOP, text, egui::FontId::proportional(size * z), Color32::from_rgb(*r, *g, *b));
                 }
                 Kind::Sprite { animations, .. } => {
@@ -3011,8 +3019,8 @@ impl App {
             return self.abrir_dibujo(dibujo::Destino::Baldosas { obj: n });
         }
         let n = self.nombre_libre("Dibujo");
-        let kind = Kind::Sprite { w: 0., h: 0., animations: vec![Animation { name: "salta".into(), frames: vec![], fps: 6., looping: true }] };
-        self.scene().objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![], vars: Vars::new() });
+        let kind = Kind::Sprite { w: 0., h: 0., animations: vec![Animation { name: "salta".into(), frames: vec![], fps: 6., looping: true }], mask: vec![], origin: None };
+        self.scene().objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![], vars: Vars::new(), effect: String::new() });
         self.sel_obj = Some(n.clone());
         self.abrir_dibujo(dibujo::Destino::Anim { obj: n, anim: 0 });
         if let Some(d) = self.dib.as_mut() {
@@ -3102,8 +3110,8 @@ impl App {
             "sprite-nuevo" => {
                 self.tab = Tab::Escena;
                 let n = self.nombre_libre("Sprite");
-                let kind = Kind::Sprite { w: 0., h: 0., animations: vec![Animation { name: "quieto".into(), frames: vec![], fps: 10., looping: true }] };
-                self.scene().objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![], vars: Vars::new() });
+                let kind = Kind::Sprite { w: 0., h: 0., animations: vec![Animation { name: "quieto".into(), frames: vec![], fps: 10., looping: true }], mask: vec![], origin: None };
+                self.scene().objects.push(ObjectDef { name: n.clone(), kind, behaviors: vec![], vars: Vars::new(), effect: String::new() });
                 self.sel_obj = Some(n.clone());
                 self.nuevo = Some(Nuevo::Sprite(n));
             }

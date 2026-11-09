@@ -209,8 +209,8 @@ fn instr(c: &Ctx, i: &Instr, cond: bool, at: &str, out: &mut Vec<String>) {
         let (es, va) = if m.cond { ("una condición", "en las condiciones") } else { ("una acción", "en las acciones") };
         out.push(format!("{at}: «{}» es {es}; va {va}", i.op));
     }
-    if i.args.len() < m.params.len() {
-        out.push(format!("{at}: «{}» necesita {} argumentos ({}), tiene {}", i.op, m.params.len(),
+    if i.args.len() < catalog::required_args(m) {
+        out.push(format!("{at}: «{}» necesita {} argumentos ({}), tiene {}", i.op, catalog::required_args(m),
             m.params.iter().map(|p| p.0).collect::<Vec<_>>().join(", "), i.args.len()));
     }
     for (k, ((name, t), a)) in m.params.iter().zip(&i.args).enumerate() {

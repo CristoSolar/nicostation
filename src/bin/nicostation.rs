@@ -260,7 +260,7 @@ async fn game() {
     }
     // Los sprites sin tamaño toman el de su primera imagen.
     for o in project.objects.iter_mut().chain(project.scenes.iter_mut().flat_map(|s| s.objects.iter_mut())) {
-        if let Kind::Sprite { w, h, animations } = &mut o.kind {
+        if let Kind::Sprite { w, h, animations, .. } = &mut o.kind {
             if let Some(t) = animations.first().and_then(|a| a.frames.first()).and_then(|f| tex.get(f)) {
                 if *w == 0. { *w = t.width() }
                 if *h == 0. { *h = t.height() }
@@ -306,8 +306,7 @@ async fn game() {
             released: released.into_iter().collect(),
             mouse: ((mx - off.x) / scale, (my - off.y) / scale),
             mouse_down: [MouseButton::Left, MouseButton::Right, MouseButton::Middle].map(is_mouse_button_down),
-            mouse_pressed: [MouseButton::Left, MouseButton::Right, MouseButton::Middle].map(is_mouse_button_pressed),
-        };
+            mouse_pressed: [MouseButton::Left, MouseButton::Right, MouseButton::Middle].map(is_mouse_button_pressed), axes: Default::default() };
         world.step(get_frame_time(), input);
 
         for cmd in std::mem::take(&mut world.cmds) {
@@ -325,8 +324,10 @@ async fn game() {
                 }
             }
             match cmd {
-                Cmd::PlaySound { file, volume } => play_sound(&sounds[&file], PlaySoundParams { looped: false, volume: volume / 100. }),
-                Cmd::PlayMusic { file, volume } => {
+                // ponytail: canales y fundidos los implementa el reproductor (pendiente)
+                Cmd::ChannelVolume { .. } | Cmd::StopChannel { .. } => {}
+                Cmd::PlaySound { file, volume, .. } => play_sound(&sounds[&file], PlaySoundParams { looped: false, volume: volume / 100. }),
+                Cmd::PlayMusic { file, volume, .. } => {
                     if let Some(m) = music.take() {
                         stop_sound(&m);
                     }
@@ -372,6 +373,7 @@ async fn game() {
                 let mul = |c: [u8; 3]| Color::from_rgba((c[0] as u16 * tr as u16 / 255) as u8, (c[1] as u16 * tg as u16 / 255) as u8, (c[2] as u16 * tb as u16 / 255) as u8, alpha);
                 let c = to_screen(o.cx(), o.cy());
                 match &def.kind {
+                    Kind::Background { .. } | Kind::Particles(_) => {} // ponytail: dibujo pendiente
                     // Los objetos 3D los dibuja el reproductor 3D.
                     Kind::Mesh { .. } | Kind::Light { .. } | Kind::Camera3d { .. } => {}
                     Kind::Box { color, .. } => draw_rectangle_ex(c.x, c.y, o.w * k, o.h * k, DrawRectangleParams {

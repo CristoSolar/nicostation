@@ -156,8 +156,9 @@ fn ordenes(world: &mut World, audio: &mut audio::Audio, activos: &Activos, juego
             }
         }
         match cmd {
-            Cmd::PlaySound { file, volume } => audio.sonido(&file, volume),
-            Cmd::PlayMusic { file, volume } => audio.musica(&file, volume),
+            Cmd::ChannelVolume { .. } | Cmd::StopChannel { .. } => {} // ponytail: canales pendientes en 3D
+            Cmd::PlaySound { file, volume, .. } => audio.sonido(&file, volume),
+            Cmd::PlayMusic { file, volume, .. } => audio.musica(&file, volume),
             Cmd::StopMusic => audio.parar_musica(),
             Cmd::StopSound { file } => audio.parar(&file),
             Cmd::Persist(v) if guardar => guardado::store(juego, &v),

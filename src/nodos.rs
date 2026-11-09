@@ -640,6 +640,10 @@ impl<'a> Cx<'a> {
                 None => ok = false,
             }
         }
+        // Los parámetros opcionales vacíos del final no se escriben (así una hoja vieja vuelve igual).
+        while args.len() > catalog::required_args(m) && args.last().is_some_and(|a| a.is_empty()) {
+            args.pop();
+        }
         ok.then(|| Instr { op: op.into(), args, not: n.not && cond, sub: if matches!(op, "or" | "and") { n.sub.clone() } else { vec![] } })
     }
 

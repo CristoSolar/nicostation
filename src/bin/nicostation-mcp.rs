@@ -257,8 +257,7 @@ impl Srv {
                     objects: vec![],
                     scenes: vec![serde_json::from_value(json!({"name": scene})).map_err(|e| e.to_string())?],
                     functions: vec![],
-                    plantilla: String::new(),
-                };
+                    plantilla: String::new(), settings: Default::default(), version: FORMAT_VERSION };
                 save(&path, &p)?;
                 self.cur = Some(path.clone());
                 Ok(format!("Proyecto creado en {} con la escena «{scene}». Las rutas de recursos son relativas a {}.", path.display(), base_dir(&path).display()))
@@ -624,6 +623,8 @@ fn resumen(p: &Project, path: &Path) -> String {
     }
     let obj_line = |o: &ObjectDef| {
         let kind = match &o.kind {
+            Kind::Background { image, .. } => format!("fondo que se repite ({image})"),
+            Kind::Particles(_) => "partículas".into(),
             Kind::Sprite { animations, .. } => format!("sprite, animaciones {:?}", animations.iter().map(|a| &a.name).collect::<Vec<_>>()),
             Kind::Text { .. } => "text".into(),
             Kind::Box { .. } => "box".into(),
@@ -871,7 +872,7 @@ fn simulate(path: &Path, a: &J) -> Result<String, String> {
     let base = base_dir(path);
     // Los sprites sin tamaño toman el de su primera imagen, como en el reproductor.
     for o in p.objects.iter_mut().chain(p.scenes.iter_mut().flat_map(|s| s.objects.iter_mut())) {
-        if let Kind::Sprite { w, h, animations } = &mut o.kind {
+        if let Kind::Sprite { w, h, animations, .. } = &mut o.kind {
             if let Some(f) = animations.first().and_then(|a| a.frames.first()) {
                 if let Ok((iw, ih)) = image::image_dimensions(base.join(f)) {
                     if *w == 0. { *w = iw as f32 }
@@ -911,8 +912,7 @@ fn simulate(path: &Path, a: &J) -> Result<String, String> {
             down: down.iter().cloned().collect(),
             mouse,
             mouse_down: [click, false, false],
-            mouse_pressed: [click && !prev_click, false, false],
-        };
+            mouse_pressed: [click && !prev_click, false, false], axes: Default::default() };
         prev = down;
         prev_click = click;
         if t + 1e-4 >= next_sample && !seguir.is_empty() {
@@ -933,6 +933,8 @@ fn simulate(path: &Path, a: &J) -> Result<String, String> {
         w.step(1. / 60., inp);
         for c in std::mem::take(&mut w.cmds) {
             let k = match c {
+                nicostation::runtime::Cmd::ChannelVolume { channel, volume, .. } => format!("volumen canal {channel} → {volume}"),
+                nicostation::runtime::Cmd::StopChannel { channel } => format!("detener canal {channel}"),
                 nicostation::runtime::Cmd::PlaySound { file, .. } => format!("sonido {file}"),
                 nicostation::runtime::Cmd::PlayMusic { file, .. } => format!("música {file}"),
                 nicostation::runtime::Cmd::StopMusic => "detener música".into(),

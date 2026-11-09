@@ -104,7 +104,7 @@ fn engine() -> Engine {
     e.register_fn("random", |a: f64, b: f64| with(|w, _| a + w.random() * (b - a)));
     e.register_fn("dt", || with(|w, _| w.dt as f64));
     e.register_fn("time", || with(|w, _| w.time));
-    e.register_fn("play_sound", |f: &str| with(|w, _| w.cmds.push(Cmd::PlaySound { file: f.into(), volume: 100. })));
+    e.register_fn("play_sound", |f: &str| with(|w, _| w.cmds.push(Cmd::PlaySound { file: f.into(), volume: 100., channel: String::new() })));
     e.register_fn("change_scene", |n: &str| with(|w, _| w.request_scene(n)));
     // Matemática en grados, como el resto del motor.
     e.register_fn("dsin", |d: f64| d.to_radians().sin());

@@ -175,15 +175,14 @@ impl Entrada {
             released: std::mem::take(&mut self.released),
             mouse: self.mouse,
             mouse_down: self.mouse_down,
-            mouse_pressed: std::mem::take(&mut self.mouse_pressed),
-        }
+            mouse_pressed: std::mem::take(&mut self.mouse_pressed), axes: Default::default() }
     }
 }
 
 /// Los sprites sin tamaño toman el de su primera imagen (como hace el reproductor antes de crear el mundo).
 pub fn preparar(p: &mut Project, tam: impl Fn(&str) -> Option<[usize; 2]>) {
     for o in p.objects.iter_mut().chain(p.scenes.iter_mut().flat_map(|s| s.objects.iter_mut())) {
-        if let Kind::Sprite { w, h, animations } = &mut o.kind {
+        if let Kind::Sprite { w, h, animations, .. } = &mut o.kind {
             if let Some([tw, th]) = animations.first().and_then(|a| a.frames.first()).and_then(|f| tam(f)) {
                 if *w == 0. {
                     *w = tw as f32;
@@ -399,6 +398,8 @@ impl Sesion {
         }
         for c in std::mem::take(&mut self.world.cmds) {
             match c {
+                Cmd::ChannelVolume { channel, volume, .. } => self.anotar(Tipo::Sonido, format!("Volumen del canal «{channel}» a {volume}")),
+                Cmd::StopChannel { channel } => self.anotar(Tipo::Sonido, format!("Se paró el canal «{channel}»")),
                 Cmd::PlaySound { file, .. } => self.anotar(Tipo::Sonido, format!("Sonido «{file}»")),
                 Cmd::PlayMusic { file, .. } => self.anotar(Tipo::Sonido, format!("Música «{file}»")),
                 Cmd::StopMusic => self.anotar(Tipo::Sonido, "Se paró la música"),
@@ -509,6 +510,7 @@ pub fn dibujar(painter: &egui::Painter, area: Rect, s: &Sesion) -> (Marco, Vec<(
             let mul = |c: [u8; 3]| rgba([0, 1, 2].map(|k| (c[k] as u16 * o.tint[k] as u16 / 255) as u8), alpha);
             let quad = o.hitbox().map(|(x, y)| pant(x, y));
             match &def.kind {
+                Kind::Background { .. } | Kind::Particles(_) => {} // ponytail: dibujo en la vista previa pendiente
                 // ponytail: la vista previa 3D dentro del editor llega con el visor 3D (etapa F7).
                 Kind::Mesh { .. } | Kind::Light { .. } | Kind::Camera3d { .. } => {}
                 Kind::Box { color, .. } => {

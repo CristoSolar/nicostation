@@ -84,6 +84,7 @@ fn mini(ui: &mut Ui, s: &Sesion, obj: &str, lado: f32) {
     p.rect_filled(r, 4, SURFACE_HOVER);
     let full = Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.));
     match s.world.object_def(obj).map(|d| &d.kind) {
+        Some(Kind::Background { .. } | Kind::Particles(_)) => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::SPARKLE, FontId::proportional(lado * 0.6), TEXT_SOFT)),
         Some(Kind::Mesh { .. }) => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::CUBE, FontId::proportional(lado * 0.6), TEXT_SOFT)),
         Some(Kind::Light { .. }) => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::LIGHTBULB, FontId::proportional(lado * 0.6), TEXT_SOFT)),
         Some(Kind::Camera3d { .. }) => drop(p.text(r.center(), Align2::CENTER_CENTER, ic::CAMERA, FontId::proportional(lado * 0.6), TEXT_SOFT)),

@@ -115,8 +115,10 @@ pub const CATALOG: &[Meta] = &[
     m!(false, "camera_shake", "Escena", "Temblor de cámara", "Hacer temblar la cámara _0_ px durante _1_ s", ["Intensidad px": Expr, "Segundos": Expr]),
     m!(false, "camera_zoom_to", "Escena", "Zoom suave", "Llevar el zoom a _0_ en _1_ s", ["Zoom": Expr, "Segundos": Expr]),
     m!(false, "camera_zoom", "Escena", "Zoom de cámara", "Zoom de la cámara = _0_", ["Zoom": Expr]),
-    m!(false, "play_sound", "Audio", "Reproducir sonido", "Reproducir _0_ al volumen _1_", ["Archivo": File, "Volumen 0-100": Expr]),
-    m!(false, "play_music", "Audio", "Reproducir música", "Reproducir música _0_ en bucle al volumen _1_", ["Archivo": File, "Volumen 0-100": Expr]),
+    m!(false, "play_sound", "Audio", "Reproducir sonido", "Reproducir _0_ al volumen _1_ (canal _2_)", ["Archivo": File, "Volumen 0-100": Expr, "Canal (opcional)": Text]),
+    m!(false, "play_music", "Audio", "Reproducir música", "Reproducir música _0_ en bucle al volumen _1_ (fundido _2_ s)", ["Archivo": File, "Volumen 0-100": Expr, "Fundido en segundos (opcional)": Expr]),
+    m!(false, "channel_volume", "Audio", "Volumen de canal", "Llevar el volumen del canal _0_ a _1_ en _2_ s", ["Canal («musica» = la música)": Text, "Volumen 0-100": Expr, "Segundos": Expr]),
+    m!(false, "stop_channel", "Audio", "Detener canal", "Detener lo que suena en el canal _0_", ["Canal": Text]),
     m!(false, "stop_music", "Audio", "Detener música", "Detener la música", []),
     m!(false, "stop_sound", "Audio", "Detener un sonido", "Detener el sonido _0_", ["Archivo": File]),
     m!(false, "save_value", "Variables", "Guardar en la partida", "Guardar _1_ en la partida como «_0_»", ["Nombre": Text, "Valor": Expr]),
@@ -137,7 +139,18 @@ pub const KEYS: &[&str] = &[
     "Key5", "Key6", "Key7", "Key8", "Key9",
 ];
 /// Propiedades de objeto conocidas (además, cualquier otro nombre es una variable del objeto).
-pub const PROPS: &[&str] = &["x", "y", "cx", "cy", "w", "h", "angle", "opacity", "z", "speed", "visible", "scale_x", "scale_y", "tint", "d", "pitch", "roll", "scale_z"];
+pub const PROPS: &[&str] = &["x", "y", "cx", "cy", "w", "h", "angle", "opacity", "z", "speed", "visible", "scale_x", "scale_y", "tint", "effect", "effect_amount", "d", "pitch", "roll", "scale_z"];
+pub const EFFECTS: &[&str] = &["none", "flash", "outline", "grayscale", "wave"];
+
+/// Parámetro opcional: su nombre lo dice («(opcional)»). Va siempre al final; vacío = valor por defecto.
+pub fn optional(param_name: &str) -> bool {
+    param_name.contains("opcional")
+}
+
+/// Cuántos argumentos son obligatorios (los opcionales van al final).
+pub fn required_args(m: &Meta) -> usize {
+    m.params.iter().take_while(|p| !optional(p.0)).count()
+}
 
 pub fn meta(op: &str) -> Option<&'static Meta> {
     CATALOG.iter().find(|m| m.op == op)
@@ -235,6 +248,8 @@ pub fn kid(op: &str) -> Kid {
         "play_music" => ("Pone una música que se repite todo el tiempo.", true),
         "stop_music" => ("Detiene la música.", true),
         "stop_sound" => ("Detiene un sonido que está sonando.", false),
+        "channel_volume" => ("Sube o baja el volumen de un canal poco a poco. El canal «musica» es la música: bájala cuando hay un diálogo.", false),
+        "stop_channel" => ("Detiene lo que suena en un canal. Un sonido con canal reemplaza al anterior del mismo canal (útil para voces).", false),
         "save_value" => ("Guarda un valor para la próxima vez que juegues, aunque cierres el juego. Ejemplo: guardar el récord. Para leerlo usa saved(\"récord\", 0).", true),
         "erase_saved" => ("Borra un valor guardado de la partida.", false),
         "script" => ("Para programadores: ejecuta código Rhai. Puede leer y cambiar cajitas, objetos y más.", false),
@@ -292,6 +307,8 @@ pub fn prop_label(p: &str) -> String {
         "z" => "adelante o atrás (más alto = más adelante)".into(),
         "speed" => "velocidad".into(),
         "visible" => "visible (1 sí, 0 no)".into(),
+        "effect" => "efecto (\"flash\", \"outline\", \"grayscale\", \"wave\" o \"none\")".into(),
+        "effect_amount" => "intensidad del efecto (0 a 1)".into(),
         "d" => "profundidad (3D)".into(),
         "pitch" => "inclinación arriba/abajo (3D)".into(),
         "roll" => "giro de costado (3D)".into(),

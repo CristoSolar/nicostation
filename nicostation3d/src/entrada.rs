@@ -41,8 +41,7 @@ impl Teclado {
             down: down.iter().cloned().collect(),
             mouse,
             mouse_down: botones,
-            mouse_pressed: [0, 1, 2].map(|k| botones[k] && !self.mouse_antes[k]),
-        };
+            mouse_pressed: [0, 1, 2].map(|k| botones[k] && !self.mouse_antes[k]), axes: Default::default() };
         self.antes = down;
         self.mouse_antes = botones;
         input
