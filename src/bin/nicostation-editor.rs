@@ -5098,7 +5098,18 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1360., 820.]).with_min_inner_size([960., 600.]).with_title("NicoStation"),
+        viewport: {
+            // app_id «nicostation»: Wayland asocia la ventana con su entrada del lanzador (y su ícono).
+            let vb = egui::ViewportBuilder::default().with_inner_size([1360., 820.]).with_min_inner_size([960., 600.]).with_title("NicoStation").with_app_id("nicostation");
+            match image::load_from_memory(include_bytes!("../../assets/icono.png")) {
+                Ok(img) => {
+                    let img = img.to_rgba8();
+                    let (width, height) = img.dimensions();
+                    vb.with_icon(egui::IconData { rgba: img.into_raw(), width, height })
+                }
+                Err(_) => vb,
+            }
+        },
         ..Default::default()
     };
     eframe::run_native("NicoStation", opts, Box::new(|cc| {

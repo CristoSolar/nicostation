@@ -125,6 +125,15 @@ Herramientas: `catalogo`, `proyecto_crear`, `proyecto_abrir`, `proyecto_resumen`
 `eventos_poner`, `eventos_ver`, `eventos_borrar`, `funcion_poner`, `recetas`, `receta_usar`, `imagen_crear`, `sonido_crear`, `validar`, `simular`,
 `jugar`, `exportar_web`. Cada cambio responde con los problemas de validación que quedan.
 
+### Instalar como aplicación (Linux)
+
+```
+./instalar.sh
+```
+
+Compila todo y lo instala para tu usuario, sin sudo: programas en `~/.local/share/nicostation/`, accesos directos
+en `~/.local/bin/` y la entrada «NicoStation» en el lanzador de aplicaciones. Correrlo de nuevo actualiza la instalación.
+
 ## Piezas
 
 | Archivo | Qué hace |
