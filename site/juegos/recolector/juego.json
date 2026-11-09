@@ -1,0 +1,479 @@
+{
+  "name": "Gato goloso",
+  "width": 800.0,
+  "height": 600.0,
+  "first_scene": "Juego",
+  "globals": {
+    "puntos_final": 0.0
+  },
+  "objects": [],
+  "scenes": [
+    {
+      "name": "Juego",
+      "background": [
+        70,
+        140,
+        70
+      ],
+      "layers": [
+        {
+          "name": "",
+          "visible": true,
+          "fixed": false
+        },
+        {
+          "name": "HUD",
+          "visible": true,
+          "fixed": true
+        }
+      ],
+      "objects": [
+        {
+          "name": "Gato",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/gato.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "top_down",
+              "max_speed": 240.0,
+              "acceleration": 400.0,
+              "deceleration": 800.0,
+              "allow_diagonals": true,
+              "rotate": false
+            },
+            {
+              "type": "bound_to_layout"
+            }
+          ]
+        },
+        {
+          "name": "Pez",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/pez.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ]
+        },
+        {
+          "name": "Perro",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/perro.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ]
+        },
+        {
+          "name": "Arbusto",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/arbusto.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ]
+        },
+        {
+          "name": "Marcador",
+          "type": "text",
+          "text": "Peces: {puntos}     Tiempo: {tiempo}",
+          "size": 26.0,
+          "color": [
+            255,
+            255,
+            255
+          ]
+        }
+      ],
+      "groups": {},
+      "instances": [
+        {
+          "obj": "Gato",
+          "x": 380.0,
+          "y": 280.0
+        },
+        {
+          "obj": "Perro",
+          "x": 700.0,
+          "y": 80.0
+        },
+        {
+          "obj": "Marcador",
+          "x": 16.0,
+          "y": 12.0,
+          "layer": "HUD"
+        },
+        {
+          "obj": "Arbusto",
+          "x": 200.0,
+          "y": 160.0
+        },
+        {
+          "obj": "Arbusto",
+          "x": 232.0,
+          "y": 160.0
+        },
+        {
+          "obj": "Arbusto",
+          "x": 264.0,
+          "y": 160.0
+        },
+        {
+          "obj": "Arbusto",
+          "x": 520.0,
+          "y": 400.0
+        },
+        {
+          "obj": "Arbusto",
+          "x": 520.0,
+          "y": 432.0
+        },
+        {
+          "obj": "Arbusto",
+          "x": 520.0,
+          "y": 464.0
+        },
+        {
+          "obj": "Arbusto",
+          "x": 120.0,
+          "y": 460.0
+        },
+        {
+          "obj": "Arbusto",
+          "x": 650.0,
+          "y": 250.0
+        }
+      ],
+      "vars": {
+        "puntos": 0.0,
+        "tiempo": 30.0
+      },
+      "events": [
+        {
+          "kind": "comment",
+          "text": "Gato goloso: come todos los peces que puedas en 30 segundos sin que te atrape el perro."
+        },
+        {
+          "conds": [
+            {
+              "op": "collides",
+              "args": [
+                "Gato",
+                "Arbusto"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "separate",
+              "args": [
+                "Gato",
+                "Arbusto"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "start"
+            }
+          ],
+          "acts": [
+            {
+              "op": "create",
+              "args": [
+                "Pez",
+                "random(40, 740)",
+                "random(60, 540)",
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "every",
+              "args": [
+                "1.2"
+              ]
+            },
+            {
+              "op": "compare",
+              "args": [
+                "count(Pez)",
+                "<",
+                "4"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "create",
+              "args": [
+                "Pez",
+                "random(40, 740)",
+                "random(60, 540)",
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "collides",
+              "args": [
+                "Gato",
+                "Pez"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "delete",
+              "args": [
+                "Pez"
+              ]
+            },
+            {
+              "op": "add_var",
+              "args": [
+                "puntos",
+                "1"
+              ]
+            },
+            {
+              "op": "play_sound",
+              "args": [
+                "snd/pez.wav",
+                "70"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "every",
+              "args": [
+                "1"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "add_var",
+              "args": [
+                "tiempo",
+                "-1"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "compare",
+              "args": [
+                "tiempo",
+                "<=",
+                "0"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "set_global",
+              "args": [
+                "puntos_final",
+                "puntos"
+              ]
+            },
+            {
+              "op": "change_scene",
+              "args": [
+                "Fin"
+              ]
+            }
+          ]
+        },
+        {
+          "acts": [
+            {
+              "op": "add",
+              "args": [
+                "Perro",
+                "x",
+                "cos(angle(Perro.cx, Perro.cy, Gato.cx, Gato.cy)) * (70 + puntos * 5) * dt"
+              ]
+            },
+            {
+              "op": "add",
+              "args": [
+                "Perro",
+                "y",
+                "sin(angle(Perro.cx, Perro.cy, Gato.cx, Gato.cy)) * (70 + puntos * 5) * dt"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "collides",
+              "args": [
+                "Gato",
+                "Perro"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "play_sound",
+              "args": [
+                "snd/perder.wav",
+                "80"
+              ]
+            },
+            {
+              "op": "set_global",
+              "args": [
+                "puntos_final",
+                "puntos"
+              ]
+            },
+            {
+              "op": "change_scene",
+              "args": [
+                "Fin"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Fin",
+      "background": [
+        40,
+        60,
+        40
+      ],
+      "layers": [
+        {
+          "name": "",
+          "visible": true,
+          "fixed": false
+        }
+      ],
+      "objects": [
+        {
+          "name": "Titulo",
+          "type": "text",
+          "text": "¡Se acabó!",
+          "size": 56.0,
+          "color": [
+            255,
+            220,
+            90
+          ]
+        },
+        {
+          "name": "Info",
+          "type": "text",
+          "text": "Puntos: {puntos_final}   ·   Enter para jugar otra vez",
+          "size": 24.0,
+          "color": [
+            255,
+            255,
+            255
+          ]
+        }
+      ],
+      "groups": {},
+      "instances": [
+        {
+          "obj": "Titulo",
+          "x": 60.0,
+          "y": 150.0
+        },
+        {
+          "obj": "Info",
+          "x": 60.0,
+          "y": 260.0
+        }
+      ],
+      "vars": {},
+      "events": [
+        {
+          "kind": "comment",
+          "text": "Pantalla final: muestra los puntos y espera Enter o un clic."
+        },
+        {
+          "conds": [
+            {
+              "op": "or",
+              "sub": [
+                {
+                  "op": "key_pressed",
+                  "args": [
+                    "Enter"
+                  ]
+                },
+                {
+                  "op": "mouse_clicked",
+                  "args": [
+                    "Left"
+                  ]
+                }
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "change_scene",
+              "args": [
+                "Juego"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "functions": []
+}

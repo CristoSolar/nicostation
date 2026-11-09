@@ -1,0 +1,481 @@
+{
+  "name": "Lluvia de asteroides",
+  "width": 600.0,
+  "height": 800.0,
+  "first_scene": "Juego",
+  "globals": {
+    "puntos_final": 0.0
+  },
+  "objects": [],
+  "scenes": [
+    {
+      "name": "Juego",
+      "background": [
+        10,
+        10,
+        30
+      ],
+      "layers": [
+        {
+          "name": "Fondo",
+          "visible": true,
+          "fixed": false
+        },
+        {
+          "name": "",
+          "visible": true,
+          "fixed": false
+        },
+        {
+          "name": "HUD",
+          "visible": true,
+          "fixed": true
+        }
+      ],
+      "objects": [
+        {
+          "name": "Nave",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/nave.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "bound_to_layout"
+            }
+          ]
+        },
+        {
+          "name": "Laser",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/laser.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "bullet",
+              "speed": 600.0
+            },
+            {
+              "type": "destroy_outside"
+            }
+          ]
+        },
+        {
+          "name": "Roca",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/roca.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "bullet",
+              "speed": 160.0
+            },
+            {
+              "type": "rotate",
+              "speed": 60.0
+            },
+            {
+              "type": "destroy_outside"
+            }
+          ]
+        },
+        {
+          "name": "Estrella",
+          "type": "sprite",
+          "w": 0.0,
+          "h": 0.0,
+          "animations": [
+            {
+              "name": "a",
+              "frames": [
+                "img/estrella.png"
+              ],
+              "fps": 8.0,
+              "looping": true
+            }
+          ],
+          "behaviors": [
+            {
+              "type": "bullet",
+              "speed": 80.0
+            },
+            {
+              "type": "screen_wrap"
+            }
+          ]
+        },
+        {
+          "name": "Marcador",
+          "type": "text",
+          "text": "Puntos: {puntos}",
+          "size": 28.0,
+          "color": [
+            255,
+            255,
+            255
+          ]
+        }
+      ],
+      "groups": {},
+      "instances": [
+        {
+          "obj": "Nave",
+          "x": 280.0,
+          "y": 700.0
+        },
+        {
+          "obj": "Marcador",
+          "x": 16.0,
+          "y": 12.0,
+          "layer": "HUD"
+        }
+      ],
+      "vars": {
+        "puntos": 0.0
+      },
+      "events": [
+        {
+          "kind": "comment",
+          "text": "Lluvia de asteroides: muévete con las flechas y dispara con Espacio."
+        },
+        {
+          "conds": [
+            {
+              "op": "start"
+            }
+          ],
+          "acts": [
+            {
+              "op": "set",
+              "args": [
+                "Nave",
+                "speed",
+                "0"
+              ]
+            }
+          ],
+          "sub": [
+            {
+              "kind": "repeat",
+              "text": "40",
+              "acts": [
+                {
+                  "op": "create",
+                  "args": [
+                    "Estrella",
+                    "random(0, 600)",
+                    "random(0, 800)",
+                    "Fondo"
+                  ]
+                },
+                {
+                  "op": "set",
+                  "args": [
+                    "Estrella",
+                    "angle",
+                    "90"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "key_down",
+              "args": [
+                "Left"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "add",
+              "args": [
+                "Nave",
+                "x",
+                "-320 * dt"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "key_down",
+              "args": [
+                "Right"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "add",
+              "args": [
+                "Nave",
+                "x",
+                "320 * dt"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "key_pressed",
+              "args": [
+                "Space"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "create",
+              "args": [
+                "Laser",
+                "Nave.cx - 2",
+                "Nave.y",
+                ""
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Laser",
+                "angle",
+                "-90"
+              ]
+            },
+            {
+              "op": "play_sound",
+              "args": [
+                "snd/laser.wav",
+                "50"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "every",
+              "args": [
+                "max(0.35, 1.2 - puntos * 0.03)"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "create",
+              "args": [
+                "Roca",
+                "random(0, 560)",
+                "-40",
+                ""
+              ]
+            },
+            {
+              "op": "set",
+              "args": [
+                "Roca",
+                "angle",
+                "random(80, 100)"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "collides",
+              "args": [
+                "Laser",
+                "Roca"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "delete",
+              "args": [
+                "Laser"
+              ]
+            },
+            {
+              "op": "delete",
+              "args": [
+                "Roca"
+              ]
+            },
+            {
+              "op": "add_var",
+              "args": [
+                "puntos",
+                "1"
+              ]
+            },
+            {
+              "op": "play_sound",
+              "args": [
+                "snd/boom.wav",
+                "60"
+              ]
+            }
+          ]
+        },
+        {
+          "conds": [
+            {
+              "op": "collides",
+              "args": [
+                "Nave",
+                "Roca"
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "play_sound",
+              "args": [
+                "snd/boom.wav",
+                "100"
+              ]
+            },
+            {
+              "op": "set_global",
+              "args": [
+                "puntos_final",
+                "puntos"
+              ]
+            },
+            {
+              "op": "change_scene",
+              "args": [
+                "Fin"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Fin",
+      "background": [
+        20,
+        20,
+        45
+      ],
+      "layers": [
+        {
+          "name": "",
+          "visible": true,
+          "fixed": false
+        }
+      ],
+      "objects": [
+        {
+          "name": "Titulo",
+          "type": "text",
+          "text": "¡Boom!",
+          "size": 56.0,
+          "color": [
+            255,
+            220,
+            90
+          ]
+        },
+        {
+          "name": "Info",
+          "type": "text",
+          "text": "Puntos: {puntos_final}   ·   Enter para jugar otra vez",
+          "size": 24.0,
+          "color": [
+            255,
+            255,
+            255
+          ]
+        }
+      ],
+      "groups": {},
+      "instances": [
+        {
+          "obj": "Titulo",
+          "x": 60.0,
+          "y": 150.0
+        },
+        {
+          "obj": "Info",
+          "x": 60.0,
+          "y": 260.0
+        }
+      ],
+      "vars": {},
+      "events": [
+        {
+          "kind": "comment",
+          "text": "Pantalla final: muestra los puntos y espera Enter o un clic."
+        },
+        {
+          "conds": [
+            {
+              "op": "or",
+              "sub": [
+                {
+                  "op": "key_pressed",
+                  "args": [
+                    "Enter"
+                  ]
+                },
+                {
+                  "op": "mouse_clicked",
+                  "args": [
+                    "Left"
+                  ]
+                }
+              ]
+            }
+          ],
+          "acts": [
+            {
+              "op": "change_scene",
+              "args": [
+                "Juego"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "functions": []
+}

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="es">
+<script>document.documentElement.classList.add("js")</script>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NicoStation · Motor de juegos que se programa con eventos</title>
+<meta name="description" content="Motor de juegos libre hecho en Rust. Se programa con hojas de eventos o nodos, tiene modo fácil para niños y exporta a web, Windows, Linux y Android.">
+<meta property="og:title" content="NicoStation">
+<meta property="og:description" content="Haz juegos con hojas de eventos y nodos. Libre, hecho en Rust.">
+<meta property="og:image" content="img/bienvenida.webp">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="img/icono.png">
+<link rel="preload" href="fonts/Geist-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a href="#" class="marca" aria-label="NicoStation, inicio">
+      <picture>
+        <source srcset="img/logo-oscuro.png" media="(prefers-color-scheme: dark)">
+        <img src="img/logo-claro.png" alt="NicoStation" width="160" height="33">
+      </picture>
+    </a>
+    <nav class="links">
+      <a href="#jugar">Demos</a>
+      <a href="#programar">Cómo se programa</a>
+      <a href="#agentes">Agentes</a>
+      <a href="#exportar">Exportar</a>
+    </nav>
+    <a class="btn btn-ghost" href="https://github.com/CristoSolar/nicostation"><i class="ph ph-github-logo"></i>GitHub</a>
+  </div>
+</header>
+
+<main>
+
+<section class="hero wrap">
+  <div class="hero-txt">
+    <h1>Haz tu primer juego <em>esta tarde.</em></h1>
+    <p>NicoStation es un motor libre que se programa con frases: cuando pasa algo, entonces haz esto. Sin escribir código.</p>
+    <div class="ctas">
+      <a class="btn btn-main" href="#instalar"><i class="ph ph-download-simple"></i>Instalar</a>
+      <a class="btn btn-ghost" href="#jugar"><i class="ph ph-game-controller"></i>Probar las demos</a>
+    </div>
+  </div>
+  <figure class="hero-img">
+    <img src="img/bienvenida.webp" width="1360" height="820" alt="Pantalla de bienvenida del editor: elige una plantilla para empezar" fetchpriority="high">
+  </figure>
+</section>
+
+<section id="jugar" class="demos wrap">
+  <h2>Juégalos aquí mismo</h2>
+  <p class="lead">Estas son las plantillas que trae el editor, exportadas a web con un clic. Lo que ves es el mismo motor.</p>
+  <div class="demo-grid">
+    <div class="pantalla" id="pantalla">
+      <button class="poster" id="poster" type="button">
+        <img id="poster-img" src="img/plataformas.webp" alt="">
+        <span class="play"><i class="ph ph-play"></i>Jugar</span>
+      </button>
+    </div>
+    <div class="lista" role="tablist" aria-label="Elegir demo">
+      <button role="tab" aria-selected="true" data-juego="plataformas" data-teclas="Flechas para moverte, Espacio para saltar">
+        <img src="img/plataformas.webp" alt=""><span><b>Aventura en plataformas</b>Salta, junta monedas, llega a la bandera</span>
+      </button>
+      <button role="tab" aria-selected="false" data-juego="naves" data-teclas="Flechas para moverte, Espacio para disparar">
+        <img src="img/naves.webp" alt=""><span><b>Lluvia de asteroides</b>Dispara antes de que te choquen</span>
+      </button>
+      <button role="tab" aria-selected="false" data-juego="atrapa" data-teclas="Flechas izquierda y derecha">
+        <img src="img/atrapa.webp" alt=""><span><b>Atrapa la fruta</b>Mueve la canasta, no dejes caer nada</span>
+      </button>
+      <button role="tab" aria-selected="false" data-juego="recolector" data-teclas="Flechas para moverte">
+        <img src="img/recolector.webp" alt=""><span><b>Gato goloso</b>Come peces y escapa del perro</span>
+      </button>
+      <p class="teclas"><i class="ph ph-keyboard"></i><span id="teclas">Flechas para moverte, Espacio para saltar</span></p>
+    </div>
+  </div>
+</section>
+
+<section id="programar" class="programar">
+  <div class="wrap">
+    <h2>Una frase por regla. O nodos, si prefieres.</h2>
+    <p class="lead">La hoja y los nodos son dos vistas del mismo juego: cambias una y la otra se actualiza sola.</p>
+    <div class="tabs" role="tablist" aria-label="Vistas del editor">
+      <button role="tab" aria-selected="true" data-img="hoja">Modo fácil</button>
+      <button role="tab" aria-selected="false" data-img="nodos">Nodos</button>
+      <button role="tab" aria-selected="false" data-img="experto">Modo experto</button>
+    </div>
+    <figure class="vista">
+      <img id="vista" src="img/hoja.webp" width="1360" height="820" loading="lazy" alt="Hoja de eventos en modo fácil">
+      <figcaption id="vista-txt">Cuando y Entonces, con palabras de verdad. Pensado para un niño de 10 años.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="bento wrap">
+  <h2>Todo lo que pide un juego de verdad</h2>
+  <div class="cajas">
+    <article class="c c-escena">
+      <img src="img/escena.webp" alt="Editor de escenas con capas y objetos" loading="lazy">
+      <div><h3>Escenas con capas</h3><p>Sprites, textos, mapas de baldosas, fondos con paralaje y partículas. Arrastras y listo.</p></div>
+    </article>
+    <article class="c c-fisica">
+      <i class="ph ph-atom"></i>
+      <h3>Física y comportamientos</h3>
+      <p>Plataformas, vista desde arriba, balas, física real con Rapier y caminos con A*.</p>
+    </article>
+    <article class="c c-tactil">
+      <img src="img/tactil.webp" alt="Juego con controles táctiles en pantalla" loading="lazy">
+      <div><h3>Controles táctiles</h3><p>En el teléfono aparecen solos.</p></div>
+    </article>
+    <article class="c c-rhai">
+      <h3>Scripts cuando hacen falta</h3>
+      <pre><code>if get_var("vidas") &lt;= 0 {
+  change_scene("Fin");
+}</code></pre>
+      <p>Rhai para la lógica que no cabe en una frase.</p>
+    </article>
+    <article class="c c-paleta">
+      <img src="img/paleta.webp" alt="Buscador para agregar un nodo" loading="lazy">
+      <div><h3>Busca, no memorices</h3><p>Escribe «saltar» o «sumar» y aparece el bloque que buscas.</p></div>
+    </article>
+  </div>
+</section>
+
+<section id="agentes" class="agentes">
+  <div class="wrap agentes-in">
+    <div>
+      <h2>Un agente puede hacer el juego entero</h2>
+      <p>NicoStation trae un conector MCP. Un agente crea escenas, dibuja pixel art, compone sonidos, escribe los eventos, simula partidas sin ventana y exporta a web.</p>
+      <p>Cada cambio responde con los problemas que quedan, así el agente corrige solo.</p>
+    </div>
+    <pre class="codigo"><code><span class="c-dim"># conectarlo a Claude Code</span>
+cargo build --release --bin nicostation-mcp --bin nicostation
+claude mcp add --scope user nicostation -- \
+  $PWD/target/release/nicostation-mcp
+
+<span class="c-dim"># después, en el chat</span>
+<span class="c-acc">&gt;</span> Hazme un juego de naves con tres niveles
+  y un jefe al final.</code></pre>
+  </div>
+</section>
+
+<section id="exportar" class="exportar wrap">
+  <h2>Un clic y tu juego sale del editor</h2>
+  <ul class="plataformas">
+    <li><i class="ph ph-globe-simple"></i><b>Web</b><span>Una carpeta que subes a cualquier hosting, como estas demos.</span></li>
+    <li><i class="ph ph-windows-logo"></i><b>Windows</b><span>Un solo .exe con el juego adentro.</span></li>
+    <li><i class="ph ph-linux-logo"></i><b>Linux</b><span>Un ejecutable, sin instalar nada.</span></li>
+    <li><i class="ph ph-android-logo"></i><b>Android</b><span>Un .apk listo para el teléfono.</span></li>
+  </ul>
+</section>
+
+<section id="instalar" class="instalar wrap">
+  <div>
+    <h2>Instálalo</h2>
+    <p>En Linux, compila e instala para tu usuario sin sudo. Aparece «NicoStation» en el lanzador de aplicaciones. Necesitas <a href="https://rustup.rs">Rust</a>.</p>
+  </div>
+  <pre class="codigo"><code>git clone https://github.com/CristoSolar/nicostation
+cd nicostation
+./instalar.sh</code></pre>
+</section>
+
+</main>
+
+<footer class="pie wrap">
+  <img src="img/icono.png" width="36" height="36" alt="">
+  <p>Hecho por Cristóbal para su hijo Nico. Código libre en <a href="https://github.com/CristoSolar/nicostation">GitHub</a>.</p>
+</footer>
+
+<script>
+// Demos: el iframe se crea al apretar Jugar, para no bajar el motor (6 MB) si nadie juega.
+const pantalla = document.getElementById("pantalla"), poster = document.getElementById("poster");
+let juego = "plataformas";
+function jugar() {
+  pantalla.innerHTML = `<iframe src="juegos/${juego}/" title="Demo jugable" allow="autoplay; gamepad; fullscreen"></iframe>`;
+  pantalla.querySelector("iframe").addEventListener("load", e => e.target.focus());
+}
+poster.addEventListener("click", jugar);
+document.querySelectorAll(".lista [role=tab]").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".lista [role=tab]").forEach(o => o.setAttribute("aria-selected", o === b));
+  juego = b.dataset.juego;
+  document.getElementById("teclas").textContent = b.dataset.teclas;
+  if (pantalla.querySelector("iframe")) jugar();
+  else document.getElementById("poster-img").src = `img/${juego}.webp`;
+}));
+
+const textos = {
+  hoja: ["Cuando y Entonces, con palabras de verdad. Pensado para un niño de 10 años.", "Hoja de eventos en modo fácil"],
+  nodos: ["Los mismos eventos como nodos conectados, al estilo Blueprint. Se editan arrastrando.", "Vista de nodos del mismo juego"],
+  experto: ["Condiciones, acciones, expresiones, grupos y funciones, compacto como en GDevelop.", "Hoja de eventos en modo experto"],
+};
+document.querySelectorAll(".tabs [role=tab]").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".tabs [role=tab]").forEach(o => o.setAttribute("aria-selected", o === b));
+  const v = document.getElementById("vista"), [txt, alt] = textos[b.dataset.img];
+  v.src = `img/${b.dataset.img}.webp`; v.alt = alt;
+  document.getElementById("vista-txt").textContent = txt;
+}));
+
+// Aparecer al entrar en pantalla.
+const io = new IntersectionObserver(es => es.forEach(e => e.isIntersecting && (e.target.classList.add("visto"), io.unobserve(e.target))), { threshold: .15 });
+document.querySelectorAll("main > section:not(.hero)").forEach(s => io.observe(s));
+</script>
+</body>
+</html>
